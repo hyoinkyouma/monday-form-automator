@@ -1,0 +1,6 @@
+{
+  "name": "Work Attendance Reporter",
+  "description": "A mobile-friendly utility to check in/out and report attendance directly to Monday.com or a custom API.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

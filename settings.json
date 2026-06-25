@@ -1,0 +1,18 @@
+{
+    "email": "roman.cabalum@ibm.com",
+    "password": "",
+    "url": "https://forms.monday.com/workforms/external/forms/726fd8547dbaa83d6c0d70f891d97be7/submissions?r=use1",
+    "loginTime": "08:30",
+    "checkInterval": 60,
+    "days": [
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday"
+    ],
+    "enableHolidayCheck": true,
+    "randomizeLogin": true,
+    "employeeName": "Roman Cabalum",
+    "answersJson": "{\n  \"answers\": {\n    \"name\": \"roman.cabalum@ibm.com\",\n    \"email_mkrmv9fp\": \"roman.cabalum@ibm.com\",\n    \"color_mkrje2rg\": \"1\",\n    \"booleanvky5wtu0\": true,\n    \"boolean7kqnipqy\": false,\n    \"booleanimy35rjk\": true\n  },\n  \"form-timezone-offset\": -480,\n  \"tags\": []\n}"
+}

@@ -1,0 +1,1077 @@
+import React, { useState, useEffect, useRef } from "react";
+import { 
+  Clock, 
+  Settings as SettingsIcon, 
+  CheckCircle2, 
+  XCircle, 
+  AlertCircle, 
+  Loader2, 
+  RefreshCw, 
+  FileCode, 
+  Trash2, 
+  History, 
+  User, 
+  MapPin, 
+  ChevronRight,
+  Info,
+  Sliders,
+  Play,
+  Square,
+  Terminal,
+  Calendar,
+  Layers,
+  Sparkles,
+  ToggleLeft,
+  ToggleRight,
+  Plus,
+  Eye,
+  EyeOff,
+  Check,
+  SlidersHorizontal,
+  Upload,
+  Download,
+  FileSpreadsheet
+} from "lucide-react";
+import { motion, AnimatePresence } from "motion/react";
+
+// Types
+interface LogEntry {
+  timestamp: string;
+  message: string;
+  section: string;
+}
+
+interface AppSettings {
+  email: string;
+  password?: string;
+  url: string;
+  loginTime: string;
+  checkInterval: number;
+  days: string[];
+  enableHolidayCheck: boolean;
+  randomizeLogin: boolean;
+  employeeName: string;
+  answersJson: string;
+  sessionCookie?: string;
+  geminiApiKey?: string;
+}
+
+export default function App() {
+  // Navigation tabs: 'dashboard' | 'logs' | 'settings'
+  const [activeTab, setActiveTab] = useState<"dashboard" | "logs" | "settings">("dashboard");
+
+  // State loaded from server
+  const [settings, setSettings] = useState<AppSettings>({
+    email: "roman.cabalum@ibm.com",
+    password: "",
+    url: "https://forms.monday.com/workforms/external/forms/726fd8547dbaa83d6c0d70f891d97be7/submissions?r=use1",
+    loginTime: "08:30",
+    checkInterval: 60,
+    days: ["monday", "tuesday", "wednesday", "thursday", "friday"],
+    enableHolidayCheck: true,
+    randomizeLogin: true,
+    employeeName: "Roman Cabalum",
+    answersJson: "{}",
+    sessionCookie: "",
+    geminiApiKey: ""
+  });
+
+  const [isSchedulerRunning, setIsSchedulerRunning] = useState<boolean>(true);
+  const [lastLoginTime, setLastLoginTime] = useState<string | null>(null);
+  const [backendLogs, setBackendLogs] = useState<LogEntry[]>([]);
+
+  // Local/UI editing states
+  const [pythonCode, setPythonCode] = useState<string>("");
+  const [importFeedback, setImportFeedback] = useState<{ success: boolean; message: string } | null>(null);
+  
+
+
+  const [actionLoading, setActionLoading] = useState<boolean>(false);
+  const [feedbackMsg, setFeedbackMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [currentTime, setCurrentTime] = useState<Date>(new Date());
+  // Interactive Mobile Form States & Helpers
+  const [isJsonViewActive, setIsJsonViewActive] = useState<boolean>(false);
+  const [newFieldName, setNewFieldName] = useState<string>("");
+  const [newFieldType, setNewFieldType] = useState<"text" | "boolean" | "number">("text");
+
+  const commonTimezones = [
+    { label: "Singapore / Manila / Taipei (UTC+8)", offset: -480 },
+    { label: "Tokyo / Seoul (UTC+9)", offset: -540 },
+    { label: "London / GMT (UTC+0)", offset: 0 },
+    { label: "New York / EST (UTC-5)", offset: 300 },
+    { label: "Los Angeles / PST (UTC-8)", offset: 480 },
+    { label: "Sydney / Melbourne (UTC+10)", offset: -600 },
+    { label: "Western Europe (UTC+1)", offset: -60 },
+  ];
+
+  const getParsedPayload = () => {
+    try {
+      const parsed = JSON.parse(settings.answersJson || "{}");
+      return {
+        answers: parsed.answers || {},
+        timezone: parsed["form-timezone-offset"] !== undefined ? parsed["form-timezone-offset"] : -480,
+        tags: parsed.tags || []
+      };
+    } catch (e) {
+      return { answers: {}, timezone: -480, tags: [] };
+    }
+  };
+
+  const updatePayloadField = (key: string, value: any) => {
+    const payload = getParsedPayload();
+    payload.answers[key] = value;
+    
+    // Auto-sync top-level email settings if updating the email field key
+    let updatedEmail = settings.email;
+    if (key === "name" || key.startsWith("email_")) {
+      updatedEmail = String(value);
+    }
+
+    setSettings(prev => ({
+      ...prev,
+      email: updatedEmail,
+      answersJson: JSON.stringify({
+        answers: payload.answers,
+        "form-timezone-offset": payload.timezone,
+        tags: payload.tags
+      }, null, 2)
+    }));
+  };
+
+  const deletePayloadField = (key: string) => {
+    const payload = getParsedPayload();
+    delete payload.answers[key];
+    setSettings(prev => ({
+      ...prev,
+      answersJson: JSON.stringify({
+        answers: payload.answers,
+        "form-timezone-offset": payload.timezone,
+        tags: payload.tags
+      }, null, 2)
+    }));
+  };
+
+  const addPayloadField = () => {
+    if (!newFieldName.trim()) return;
+    const payload = getParsedPayload();
+    
+    // Default values by type
+    let defaultValue: any = "";
+    if (newFieldType === "boolean") defaultValue = false;
+    if (newFieldType === "number") defaultValue = 0;
+
+    payload.answers[newFieldName.trim()] = defaultValue;
+    setSettings(prev => ({
+      ...prev,
+      answersJson: JSON.stringify({
+        answers: payload.answers,
+        "form-timezone-offset": payload.timezone,
+        tags: payload.tags
+      }, null, 2)
+    }));
+    setNewFieldName("");
+  };
+
+  const updateTimezoneOffset = (offset: number) => {
+    const payload = getParsedPayload();
+    setSettings(prev => ({
+      ...prev,
+      answersJson: JSON.stringify({
+        answers: payload.answers,
+        "form-timezone-offset": offset,
+        tags: payload.tags
+      }, null, 2)
+    }));
+  };
+
+  const getFriendlyLabel = (key: string) => {
+    if (key === "name") return "Primary Account Name";
+    if (key.startsWith("email_")) return "Work email address";
+    if (key.startsWith("color_")) return "Monday Workgroup Option ID";
+    if (key === "booleanvky5wtu0") return "Are you reporting for duty today?";
+    if (key === "boolean7kqnipqy") return "Are you currently on annual leave / medical leave?";
+    if (key === "booleanimy35rjk") return "Acknowledge health, safety, & location terms";
+    if (key.startsWith("boolean")) {
+      return "Checkbox Toggle Option";
+    }
+    return "Custom Input Field";
+  };
+
+  const logsEndRef = useRef<HTMLDivElement>(null);
+
+  // Sync clock
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentTime(new Date());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Fetch initial configuration on mount
+  const refreshStatus = async () => {
+    try {
+      const res = await fetch("/api/scheduler/status");
+      const result = await res.json();
+      if (result.status === "ok") {
+        setIsSchedulerRunning(result.running);
+        setSettings(result.settings);
+        setLastLoginTime(result.lastLoginTime);
+      }
+    } catch (err) {
+      console.error("Error loading status:", err);
+    }
+  };
+
+  const refreshLogs = async () => {
+    try {
+      const res = await fetch("/api/logs");
+      const result = await res.json();
+      if (result.status === "ok") {
+        setBackendLogs(result.logs);
+      }
+    } catch (err) {
+      console.error("Error loading logs:", err);
+    }
+  };
+
+  useEffect(() => {
+    refreshStatus();
+    refreshLogs();
+
+    // Poll logs and status periodically
+    const statusTimer = setInterval(refreshStatus, 6000);
+    const logsTimer = setInterval(refreshLogs, 3000);
+
+    return () => {
+      clearInterval(statusTimer);
+      clearInterval(logsTimer);
+    };
+  }, []);
+
+  // Auto scroll logs console to bottom
+  useEffect(() => {
+    if (activeTab === "logs") {
+      logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [backendLogs, activeTab]);
+
+  // Handle saving configurations to server
+  const handleSaveSettings = async (updatedSettings: AppSettings) => {
+    try {
+      setActionLoading(true);
+      const response = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updatedSettings)
+      });
+      const result = await response.json();
+      if (result.status === "ok") {
+        setFeedbackMsg({ type: "success", text: "Configurations saved to server!" });
+        setSettings(updatedSettings);
+        setTimeout(() => setFeedbackMsg(null), 3500);
+        setActiveTab("dashboard");
+      } else {
+        throw new Error(result.message || "Failed to save settings");
+      }
+    } catch (error: any) {
+      setFeedbackMsg({ type: "error", text: `Error: ${error.message}` });
+      setTimeout(() => setFeedbackMsg(null), 5000);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Toggle backend scheduler state
+  const handleToggleScheduler = async () => {
+    setActionLoading(true);
+    const endpoint = isSchedulerRunning ? "/api/scheduler/stop" : "/api/scheduler/start";
+    try {
+      const res = await fetch(endpoint, { method: "POST" });
+      const result = await res.json();
+      if (result.status === "ok") {
+        setIsSchedulerRunning(!isSchedulerRunning);
+        setFeedbackMsg({
+          type: "success",
+          text: isSchedulerRunning ? "Scheduler stopped successfully." : "Scheduler daemon started."
+        });
+        setTimeout(() => setFeedbackMsg(null), 3500);
+      }
+    } catch (err: any) {
+      setFeedbackMsg({ type: "error", text: `Failed toggling scheduler: ${err.message}` });
+      setTimeout(() => setFeedbackMsg(null), 5000);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Test Manual AutoLogin
+  const handleManualTestLogin = async () => {
+    setActionLoading(true);
+    setFeedbackMsg(null);
+    try {
+      const res = await fetch("/api/login/test", { method: "POST" });
+      const result = await res.json();
+      if (result.status === "ok") {
+        setFeedbackMsg({
+          type: "success",
+          text: "AutoLogin manual execution finished successfully!"
+        });
+        setTimeout(() => setFeedbackMsg(null), 5000);
+        refreshStatus();
+        refreshLogs();
+      } else {
+        throw new Error(result.message || "Execution error");
+      }
+    } catch (err: any) {
+      setFeedbackMsg({ type: "error", text: `Manual Login Test Failed: ${err.message}` });
+      setTimeout(() => setFeedbackMsg(null), 6000);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+
+
+  // Extract from Python Script
+  const handleParsePython = () => {
+    if (!pythonCode.trim()) {
+      setImportFeedback({ success: false, message: "Please paste your Python code first." });
+      return;
+    }
+
+    // RegEx patterns
+    const emailRegex = /(?:email|email_mkrmv9fp|username)\s*[:=]\s*["']([^"'\s]+@[^"'\s]+\.[^"'\s]+)["']/i;
+    const formUrlRegex = /(https:\/\/forms\.monday\.com\/workforms\/external\/forms\/[a-f0-9]{32}\/submissions\?r=[a-z0-9]+)/i;
+    const loginTimeRegex = /(?:loginTime|login_time|time_string)\s*[:=]\s*["'](\d{2}:\d{2})["']/i;
+
+    const emailMatch = pythonCode.match(emailRegex);
+    const formUrlMatch = pythonCode.match(formUrlRegex);
+    const loginTimeMatch = pythonCode.match(loginTimeRegex);
+
+    let count = 0;
+    const updated = { ...settings };
+
+    if (emailMatch && emailMatch[1]) {
+      updated.email = emailMatch[1];
+      count++;
+    }
+    if (formUrlMatch && formUrlMatch[1]) {
+      updated.url = formUrlMatch[1];
+      count++;
+    }
+    if (loginTimeMatch && loginTimeMatch[1]) {
+      updated.loginTime = loginTimeMatch[1];
+      count++;
+    }
+
+    if (count > 0) {
+      setSettings(updated);
+      setImportFeedback({
+        success: true,
+        message: `Extracted ${count} variables successfully! Review configurations below and click "Save Configuration".`
+      });
+    } else {
+      setImportFeedback({
+        success: false,
+        message: "Could not find any obvious Monday Form variables (email, URL, or time). Make sure your Python file is correctly copied."
+      });
+    }
+    setTimeout(() => setImportFeedback(null), 7000);
+  };
+
+  // Preset week toggle
+  const toggleDay = (day: string) => {
+    const isSelected = settings.days.includes(day);
+    const nextDays = isSelected
+      ? settings.days.filter((d) => d !== day)
+      : [...settings.days, day];
+    setSettings({ ...settings, days: nextDays });
+  };
+
+  return (
+    <div id="main_viewport" className="min-h-screen bg-[#0A0C10] flex flex-col items-center justify-center font-sans text-slate-100 selection:bg-indigo-500/20 antialiased p-0 md:py-8">
+      
+      {/* Dynamic Device Mockup Shell */}
+      <div className="w-full max-w-md min-h-screen md:min-h-[820px] md:max-h-[850px] bg-[#12141C] md:rounded-[40px] md:border-8 md:border-[#222632] md:shadow-[0_0_80px_rgba(0,0,0,0.6)] flex flex-col overflow-hidden relative">
+        
+        {/* Brand Header bar */}
+        <header id="app_header" className="sticky top-0 z-40 bg-[#12141C]/90 backdrop-blur-md border-b border-[#2D3348] py-4.5 px-5 flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className={`h-2.5 w-2.5 rounded-full ${isSchedulerRunning ? "bg-emerald-500 animate-pulse" : "bg-amber-500"}`} />
+            <div>
+              <span className="font-extrabold tracking-tight text-sm text-[#F8FAFC]">AutoLogin Portal</span>
+              <span className="ml-1.5 text-[9px] bg-indigo-950 text-indigo-300 border border-indigo-800/40 px-1.5 py-0.5 rounded-full font-mono">
+                Engine
+              </span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {isSchedulerRunning ? (
+              <span className="text-[10px] bg-emerald-950/40 text-emerald-400 border border-emerald-500/25 px-2.5 py-1 rounded-full font-extrabold uppercase tracking-wide">
+                Active
+              </span>
+            ) : (
+              <span className="text-[10px] bg-amber-950/40 text-amber-400 border border-amber-500/20 px-2.5 py-1 rounded-full font-extrabold uppercase tracking-wide">
+                Paused
+              </span>
+            )}
+          </div>
+        </header>
+
+        {/* Scrollable Main Area */}
+        <main id="app_main" className="flex-1 overflow-y-auto px-5 py-5 flex flex-col justify-start">
+          
+          {/* Dynamic feedback messages */}
+          <AnimatePresence>
+            {feedbackMsg && (
+              <motion.div
+                id="global_feedback"
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                className={`mb-4 p-4 rounded-2xl text-xs flex items-start gap-3 shadow-md ${
+                  feedbackMsg.type === "success" 
+                    ? "bg-emerald-600 text-white border border-emerald-500/30" 
+                    : "bg-rose-600 text-white border border-rose-500/30"
+                }`}
+              >
+                {feedbackMsg.type === "success" ? (
+                  <CheckCircle2 className="h-4.5 w-4.5 shrink-0 text-emerald-100" />
+                ) : (
+                  <XCircle className="h-4.5 w-4.5 shrink-0 text-rose-100" />
+                )}
+                <span className="font-semibold leading-normal">{feedbackMsg.text}</span>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* Tab Switcher Area */}
+          <div className="flex-1 flex flex-col">
+            
+            {/* TAB 1: DASHBOARD */}
+            {activeTab === "dashboard" && (
+              <div id="tab_dashboard" className="space-y-5 flex-1 flex flex-col justify-between">
+                
+                <div className="space-y-4">
+                  {/* Elegant Real-Time Clock Display */}
+                  <div className="bg-gradient-to-br from-[#1E2230] to-[#161924] rounded-3xl p-5 border border-[#2D3348] shadow-lg flex flex-col items-center justify-center text-center">
+                    <span className="text-[#64748B] font-bold tracking-wider text-[10px] uppercase mb-1">Local Time (SG Proxy)</span>
+                    <div className="font-mono text-3xl font-extrabold tracking-tight flex items-center text-[#F8FAFC]">
+                      {currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true }).split(" ")[0]}
+                      <span className="animate-pulse mx-0.5 text-indigo-500/75">:</span>
+                      {currentTime.toLocaleTimeString([], { second: '2-digit' }).slice(-2)}
+                      <span className="text-[10px] font-sans font-bold text-[#64748B] ml-2 bg-[#1C1F2A] px-1.5 py-0.5 rounded border border-[#2D3348] uppercase">
+                        {currentTime.toLocaleTimeString([], { hour12: true }).slice(-2)}
+                      </span>
+                    </div>
+                    <div className="text-xs text-slate-400 font-medium mt-1">
+                      {currentTime.toLocaleDateString("en-US", { weekday: 'long', month: 'short', day: 'numeric' })}
+                    </div>
+                  </div>
+
+                  {/* Daemon Scheduler Card */}
+                  <div className="bg-[#1C1F2A] border border-[#2D3348] rounded-3xl p-5 space-y-4 shadow-sm">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Clock className="h-5 w-5 text-indigo-400" />
+                        <div>
+                          <h4 className="font-extrabold text-sm text-white">Automated Scheduler</h4>
+                          <span className="text-[11px] text-slate-400">Time trigger-based daemon</span>
+                        </div>
+                      </div>
+                      <button
+                        onClick={handleToggleScheduler}
+                        disabled={actionLoading}
+                        className={`p-1.5 rounded-xl border transition-all cursor-pointer ${
+                          isSchedulerRunning
+                            ? "bg-emerald-950/40 text-emerald-400 border-emerald-500/30 hover:bg-emerald-950"
+                            : "bg-amber-950/40 text-amber-400 border-amber-500/20 hover:bg-amber-950"
+                        }`}
+                      >
+                        {isSchedulerRunning ? <Square className="h-4 w-4 fill-emerald-400" /> : <Play className="h-4 w-4 fill-amber-400" />}
+                      </button>
+                    </div>
+
+                    <div className="border-t border-[#2D3348] pt-3 flex flex-col gap-2 text-xs">
+                      <div className="flex items-center justify-between text-slate-300">
+                        <span>Trigger Time:</span>
+                        <span className="font-mono font-bold text-white bg-[#12141C] border border-[#2D3348] px-2.5 py-0.5 rounded-lg">
+                          {settings.loginTime} (GMT+8)
+                        </span>
+                      </div>
+
+                      <div className="flex items-center justify-between text-slate-300">
+                        <span>Active Days:</span>
+                        <span className="font-semibold text-indigo-400 text-right uppercase text-[10px]">
+                          {settings.days.length > 0 ? settings.days.slice(0, 3).join(", ") + (settings.days.length > 3 ? "..." : "") : "None"}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center justify-between text-slate-300">
+                        <span>Holiday Filter:</span>
+                        <span className="flex items-center gap-1 text-[11px]">
+                          <span className={`h-1.5 w-1.5 rounded-full ${settings.enableHolidayCheck ? "bg-emerald-400" : "bg-slate-500"}`} />
+                          {settings.enableHolidayCheck ? "LLM Public Holidays" : "None"}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Connection overview / active profile */}
+                  <div className="bg-[#1C1F2A] border border-[#2D3348] rounded-3xl p-5 space-y-3">
+                    <div className="flex items-center justify-between text-xs font-bold text-slate-400">
+                      <span>MONITORING TARGETS</span>
+                      <span className="text-[10px] text-indigo-400 bg-indigo-950/60 px-2 py-0.5 rounded border border-indigo-800/20">
+                        Form Submission
+                      </span>
+                    </div>
+
+                    <div className="flex items-start gap-3">
+                      <User className="h-5 w-5 text-indigo-400 shrink-0 mt-0.5" />
+                      <div className="min-w-0 flex-1 text-xs">
+                        <span className="font-bold text-white block">Email Profile</span>
+                        <span className="text-slate-400 block truncate">{settings.email}</span>
+                        <span className="text-slate-500 text-[10px] block mt-1 truncate" title={settings.url}>
+                          {settings.url}
+                        </span>
+                      </div>
+                    </div>
+
+                    {lastLoginTime && (
+                      <div className="pt-2 border-t border-[#2D3348] flex items-center justify-between text-[11px] text-slate-400">
+                        <span>Last Execution:</span>
+                        <span className="font-mono text-emerald-400 font-bold">{lastLoginTime}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* manual override controls */}
+                <div className="space-y-3 pt-4">
+                  <button
+                    id="btn_test_login"
+                    disabled={actionLoading}
+                    onClick={handleManualTestLogin}
+                    className="w-full py-4.5 bg-indigo-600 hover:bg-indigo-500 active:scale-98 text-white rounded-2xl font-bold text-sm tracking-wide transition-all shadow-lg shadow-indigo-600/10 flex items-center justify-center gap-2 cursor-pointer uppercase"
+                  >
+                    {actionLoading ? (
+                      <Loader2 className="h-5 w-5 animate-spin text-white" />
+                    ) : (
+                      <>
+                        <Sparkles className="h-4.5 w-4.5" />
+                        <span>Trigger Manual Test Login</span>
+                      </>
+                    )}
+                  </button>
+
+                  <p className="text-[10px] text-center text-slate-500">
+                    * Simulates login events, handles automated delay and holiday filters immediately
+                  </p>
+                </div>
+
+              </div>
+            )}
+
+            {/* TAB 2: SYSTEM LOG TERMINAL */}
+            {activeTab === "logs" && (
+              <div id="tab_logs" className="space-y-4 flex-1 flex flex-col justify-between">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Terminal className="h-4.5 w-4.5 text-indigo-400" />
+                    <span className="text-xs font-bold uppercase tracking-wider text-[#64748B]">
+                      Server Console Stdout
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => setBackendLogs([])}
+                    className="text-rose-400 hover:text-rose-300 text-xs font-semibold flex items-center gap-1 cursor-pointer"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    Clear Logs
+                  </button>
+                </div>
+
+                {/* Live Console Terminal */}
+                <div className="flex-1 bg-[#0A0C10] border border-[#2D3348] rounded-3xl p-4 font-mono text-[11px] text-emerald-400 overflow-y-auto min-h-[380px] max-h-[440px] flex flex-col gap-1.5 scrollbar-thin scrollbar-thumb-slate-800">
+                  {backendLogs.length === 0 ? (
+                    <div className="text-slate-600 italic text-center my-auto">
+                      Console idle. Awaiting scheduler signals or manual tests...
+                    </div>
+                  ) : (
+                    backendLogs.map((log, index) => (
+                      <div key={index} className="leading-relaxed hover:bg-slate-900/40 p-0.5 rounded transition-colors">
+                        <span className="text-[#64748B] text-[10px] mr-1.5">
+                          {new Date(log.timestamp).toLocaleTimeString([], { hour12: false })}
+                        </span>
+                        <span className={`px-1.5 py-0.2 rounded text-[9px] font-bold uppercase mr-2 ${
+                          log.section === "SCHEDULER" 
+                            ? "bg-blue-950 text-blue-400 border border-blue-800/30"
+                            : log.section === "API"
+                              ? "bg-indigo-950 text-indigo-400 border border-indigo-800/30"
+                              : log.section === "HOLIDAY_CHECK"
+                                ? "bg-amber-950/60 text-amber-400 border border-amber-500/20"
+                                : "bg-zinc-900 text-slate-300"
+                        }`}>
+                          {log.section}
+                        </span>
+                        <span className="text-slate-100">{log.message}</span>
+                      </div>
+                    ))
+                  )}
+                  <div ref={logsEndRef} />
+                </div>
+
+                <div className="bg-[#1C1F2A] border border-[#2D3348] rounded-2xl p-4.5 text-xs text-slate-400 leading-normal flex items-start gap-2.5">
+                  <Info className="h-4.5 w-4.5 text-indigo-400 shrink-0 mt-0.5" />
+                  <p className="text-[11px]">
+                    This console displays real-time execution flows directly from our backend scheduler daemon, simulating your custom Python desktop agent.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* TAB 3: SETTINGS CONFIG */}
+            {activeTab === "settings" && (
+              <div id="tab_settings" className="space-y-5">
+                
+                {/* Python desktop importer banner */}
+                <div className="bg-gradient-to-br from-[#1E2230] to-[#161924] rounded-3xl p-5 shadow-lg border border-[#2D3348] space-y-3.5">
+                  <div className="flex items-center gap-2.5">
+                    <FileCode className="h-5 w-5 text-emerald-400" />
+                    <div>
+                      <h4 className="font-bold text-sm text-white">Import Python Script</h4>
+                      <p className="text-[11px] text-slate-400">Extracts Monday API keys, Forms, and timezone variables automatically</p>
+                    </div>
+                  </div>
+
+                  <textarea
+                    value={pythonCode}
+                    onChange={(e) => setPythonCode(e.target.value)}
+                    placeholder="Paste Python Tkinter or PyQt autologin script here..."
+                    className="w-full h-24 bg-[#0F111A] border border-[#2D3348] rounded-2xl p-3 font-mono text-xs text-slate-200 focus:outline-none focus:border-indigo-500 placeholder:text-slate-700 leading-relaxed resize-none"
+                  />
+
+                  <div className="flex justify-between items-center">
+                    <span className="text-[10px] text-slate-500 font-mono">Accepts App.py & autologin.py formats</span>
+                    <button
+                      onClick={handleParsePython}
+                      className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs px-4 py-2 rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer shadow-sm shadow-indigo-600/10"
+                    >
+                      <RefreshCw className="h-3 w-3 animate-spin-slow" />
+                      <span>Extract & Populate</span>
+                    </button>
+                  </div>
+
+                  {importFeedback && (
+                    <div className={`p-3 rounded-2xl text-xs font-semibold ${
+                      importFeedback.success 
+                        ? "bg-emerald-950/40 text-emerald-400 border border-emerald-500/20" 
+                        : "bg-rose-950/40 text-rose-400 border border-rose-500/20"
+                    }`}>
+                      {importFeedback.message}
+                    </div>
+                  )}
+                </div>
+                {/* Configuration details */}
+                <div className="bg-[#1C1F2A] rounded-3xl p-5 border border-[#2D3348] space-y-4">
+                  <div className="flex items-center gap-2 border-b border-[#2D3348] pb-3">
+                    <Layers className="h-4.5 w-4.5 text-indigo-400" />
+                    <h3 className="font-extrabold text-sm text-white">WorkForms Form Configuration</h3>
+                  </div>
+
+                  <div className="space-y-4 animate-fadeIn">
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-bold uppercase tracking-wider text-[#64748B]">WorkForms Submission URL</label>
+                        <input
+                          type="text"
+                          value={settings.url}
+                          onChange={(e) => setSettings({ ...settings, url: e.target.value })}
+                          placeholder="https://forms.monday.com/workforms/external/forms/..."
+                          className="w-full bg-[#0F111A] border border-[#2D3348] rounded-xl px-3.5 py-2.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
+                        />
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-bold uppercase tracking-wider text-[#64748B]">Reporting Email</label>
+                        <input
+                          type="email"
+                          value={settings.email}
+                          onChange={(e) => setSettings({ ...settings, email: e.target.value })}
+                          placeholder="e.g. roman.cabalum@ibm.com"
+                          className="w-full bg-[#0F111A] border border-[#2D3348] rounded-xl px-3.5 py-2.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-semibold"
+                        />
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-bold uppercase tracking-wider text-[#64748B] flex items-center justify-between">
+                          <span>Monday Session Cookies (For Authenticated Forms)</span>
+                          <span className="text-[9px] text-indigo-400 font-mono font-normal normal-case">Optional</span>
+                        </label>
+                        <textarea
+                          value={settings.sessionCookie || ""}
+                          onChange={(e) => setSettings({ ...settings, sessionCookie: e.target.value })}
+                          placeholder="Paste your Monday.com Cookie header here if your WorkForm requires corporate/SSO authentication..."
+                          className="w-full h-16 bg-[#0F111A] border border-[#2D3348] rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 resize-none font-mono text-[10px]"
+                        />
+                        <p className="text-[9px] text-slate-500 leading-normal">
+                          Required only if the Monday Form restricts submission to organization members. Extract the Cookie header from browser DevTools (F12 &rarr; Network tab) and paste it here.
+                        </p>
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-bold uppercase tracking-wider text-[#64748B] flex items-center justify-between">
+                          <span>Gemini API Key (For Holiday Checks)</span>
+                          <span className="text-[9px] text-indigo-400 font-mono font-normal normal-case">Optional</span>
+                        </label>
+                        <input
+                          type="password"
+                          value={settings.geminiApiKey || ""}
+                          onChange={(e) => setSettings({ ...settings, geminiApiKey: e.target.value })}
+                          placeholder="Paste your Gemini API Key here..."
+                          className="w-full bg-[#0F111A] border border-[#2D3348] rounded-xl px-3.5 py-2.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-mono"
+                        />
+                        <p className="text-[9px] text-slate-500 leading-normal">
+                          Used to determine Singapore public holidays. If neither this field nor the system environment contains an API key, the holiday check defaults to standard working days.
+                        </p>
+                      </div>
+
+                      {/* Advanced View Toggle Header */}
+                      <div className="flex items-center justify-between pt-1">
+                        <label className="text-[10px] font-bold uppercase tracking-wider text-[#64748B]">WorkForms Payload Config</label>
+                        <button
+                          type="button"
+                          onClick={() => setIsJsonViewActive(!isJsonViewActive)}
+                          className="text-[10px] text-indigo-400 font-bold hover:text-indigo-300 flex items-center gap-1 cursor-pointer transition-colors"
+                        >
+                          {isJsonViewActive ? (
+                            <>
+                              <SlidersHorizontal className="h-3 w-3" />
+                              <span>Switch to Interactive Form</span>
+                            </>
+                          ) : (
+                            <>
+                              <FileCode className="h-3 w-3" />
+                              <span>Switch to Raw JSON Editor</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+
+                      {isJsonViewActive ? (
+                        /* Advanced JSON Textarea View */
+                        <div className="space-y-1.5 animate-fadeIn">
+                          <textarea
+                            value={settings.answersJson}
+                            onChange={(e) => setSettings({ ...settings, answersJson: e.target.value })}
+                            placeholder="{ ... }"
+                            className="w-full h-48 bg-[#0F111A] border border-[#2D3348] rounded-xl p-3 font-mono text-[11px] text-slate-300 focus:outline-none focus:border-indigo-500 resize-none leading-relaxed"
+                          />
+                        </div>
+                      ) : (
+                        /* Mobile Form Interactive Simulation View */
+                        <div className="space-y-3.5 animate-fadeIn">
+                          
+                          {/* Inner Mobile-Style Form Wrapper */}
+                          <div className="bg-[#0F111A] border border-[#2D3348] rounded-2xl p-4 space-y-4">
+                            <div className="flex items-center justify-between border-b border-[#2D3348]/60 pb-2.5">
+                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                                <Clock className="h-3 w-3 text-indigo-400" />
+                                Interactive Form Preview
+                              </span>
+                              <span className="text-[9px] text-[#64748B] font-mono">Simulates submission payload</span>
+                            </div>
+
+                            {/* Dynamic parsed fields */}
+                            <div className="space-y-3">
+                              {Object.entries(getParsedPayload().answers).length === 0 ? (
+                                <div className="text-center text-slate-500 italic text-xs py-2">
+                                  No fields configured. Add one below to start.
+                                </div>
+                              ) : (
+                                Object.entries(getParsedPayload().answers).map(([key, value]) => {
+                                  const isBool = typeof value === "boolean";
+                                  const isNum = typeof value === "number";
+
+                                  return (
+                                    <div key={key} className="bg-[#12141C]/50 border border-[#2D3348]/30 rounded-xl p-3.5 space-y-2 relative group transition-all hover:border-[#2D3348]">
+                                      
+                                      {/* Header with name and delete action */}
+                                      <div className="flex items-start justify-between">
+                                        <div>
+                                          <span className="text-[11px] font-bold text-slate-200 block">
+                                            {getFriendlyLabel(key)}
+                                          </span>
+                                          <code className="text-[9px] text-slate-500 font-mono block mt-0.5">
+                                            Key: {key}
+                                          </code>
+                                        </div>
+                                        <button
+                                          type="button"
+                                          onClick={() => deletePayloadField(key)}
+                                          className="text-slate-600 hover:text-rose-400 p-1 rounded-lg transition-colors cursor-pointer"
+                                          title="Delete Field"
+                                        >
+                                          <Trash2 className="h-3.5 w-3.5" />
+                                        </button>
+                                      </div>
+
+                                      {/* Specific Controls */}
+                                      <div className="pt-1.5">
+                                        {isBool ? (
+                                          <div className="flex items-center justify-between bg-[#0F111A] px-3 py-2 rounded-xl border border-[#2D3348]/40">
+                                            <span className="text-xs text-slate-300">Option state: {value ? "Checked / Yes" : "Unchecked / No"}</span>
+                                            <button
+                                              type="button"
+                                              onClick={() => updatePayloadField(key, !value)}
+                                              className="transition-colors cursor-pointer"
+                                            >
+                                              {value ? (
+                                                <ToggleRight className="h-7 w-7 text-indigo-400 fill-indigo-400/20" />
+                                              ) : (
+                                                <ToggleLeft className="h-7 w-7 text-slate-600" />
+                                              )}
+                                            </button>
+                                          </div>
+                                        ) : isNum ? (
+                                          <input
+                                            type="number"
+                                            value={value as number}
+                                            onChange={(e) => updatePayloadField(key, Number(e.target.value))}
+                                            className="w-full bg-[#0F111A] border border-[#2D3348]/60 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-mono"
+                                          />
+                                        ) : (
+                                          <input
+                                            type="text"
+                                            value={value as string}
+                                            onChange={(e) => updatePayloadField(key, e.target.value)}
+                                            className="w-full bg-[#0F111A] border border-[#2D3348]/60 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
+                                          />
+                                        )}
+                                      </div>
+
+                                    </div>
+                                  );
+                                })
+                              )}
+                            </div>
+
+                            {/* Timezone settings block */}
+                            <div className="pt-2 border-t border-[#2D3348]/40 space-y-2">
+                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                                Form Timezone Offset
+                              </span>
+                              <div className="grid grid-cols-1 gap-2">
+                                <select
+                                  value={getParsedPayload().timezone}
+                                  onChange={(e) => updateTimezoneOffset(Number(e.target.value))}
+                                  className="w-full bg-[#12141C] border border-[#2D3348] rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 cursor-pointer"
+                                >
+                                  {commonTimezones.map((tz) => (
+                                    <option key={tz.offset} value={tz.offset}>
+                                      {tz.label}
+                                    </option>
+                                  ))}
+                                  {/* Fallback option if timezone isn't in presets */}
+                                  {!commonTimezones.some(t => t.offset === getParsedPayload().timezone) && (
+                                    <option value={getParsedPayload().timezone}>
+                                      Custom Offset ({getParsedPayload().timezone}m)
+                                    </option>
+                                  )}
+                                </select>
+                                
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[10px] text-slate-500 font-mono shrink-0">Custom offset (minutes):</span>
+                                  <input
+                                    type="number"
+                                    value={getParsedPayload().timezone}
+                                    onChange={(e) => updateTimezoneOffset(Number(e.target.value))}
+                                    className="w-20 bg-[#12141C] border border-[#2D3348] rounded-lg px-2 py-1 text-xs text-center font-mono text-slate-200 focus:outline-none focus:border-indigo-500"
+                                  />
+                                </div>
+                              </div>
+                            </div>
+
+                          </div>
+
+                          {/* Dynamic Add Field Box */}
+                          <div className="bg-[#0F111A]/40 border border-[#2D3348]/40 rounded-2xl p-4.5 space-y-3">
+                            <span className="text-[10px] font-bold text-slate-300 uppercase tracking-wider block">
+                              Add New Field to Form
+                            </span>
+                            <div className="flex flex-col gap-2">
+                              <input
+                                type="text"
+                                value={newFieldName}
+                                onChange={(e) => setNewFieldName(e.target.value)}
+                                placeholder="Unique Field Key (e.g. status_col)"
+                                className="w-full bg-[#12141C] border border-[#2D3348] rounded-xl px-3 py-2.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-mono"
+                              />
+                              <div className="grid grid-cols-2 gap-2">
+                                <select
+                                  value={newFieldType}
+                                  onChange={(e) => setNewFieldType(e.target.value as any)}
+                                  className="bg-[#12141C] border border-[#2D3348] rounded-xl px-3 py-2 text-xs text-slate-300 focus:outline-none focus:border-indigo-500 cursor-pointer"
+                                >
+                                  <option value="text">Text / Input</option>
+                                  <option value="boolean">Toggle / Checkbox</option>
+                                  <option value="number">Numeric</option>
+                                </select>
+                                <button
+                                  type="button"
+                                  onClick={addPayloadField}
+                                  disabled={!newFieldName.trim()}
+                                  className="bg-indigo-600/20 hover:bg-indigo-600 text-indigo-400 hover:text-white border border-indigo-500/25 rounded-xl text-xs font-bold py-2 transition-all cursor-pointer disabled:opacity-40 disabled:hover:bg-indigo-600/20 disabled:hover:text-indigo-400"
+                                >
+                                  + Insert Field
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+
+                        </div>
+                      )}
+                    </div>
+
+                  {/* Scheduler Settings details */}
+                  <div className="border-t border-[#2D3348] pt-4.5 space-y-4">
+                    <div className="flex items-center gap-2">
+                      <Calendar className="h-4.5 w-4.5 text-indigo-400" />
+                      <h4 className="font-extrabold text-xs text-white uppercase tracking-wider">Scheduler Rules</h4>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-bold uppercase tracking-wider text-[#64748B]">Daily Login Time (GMT+8)</label>
+                      <input
+                        type="time"
+                        value={settings.loginTime}
+                        onChange={(e) => setSettings({ ...settings, loginTime: e.target.value })}
+                        className="w-full bg-[#0F111A] border border-[#2D3348] rounded-xl p-2.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-semibold font-mono"
+                      />
+                    </div>
+
+                    {/* Weekdays pickers */}
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-bold uppercase tracking-wider text-[#64748B] block">Active Scheduler Days</label>
+                      <div className="flex flex-wrap gap-1.5">
+                        {["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"].map((day) => {
+                          const isSelected = settings.days.includes(day);
+                          return (
+                            <button
+                              key={day}
+                              onClick={() => toggleDay(day)}
+                              className={`px-3 py-1.5 rounded-xl text-[10px] font-bold uppercase tracking-wide border transition-all cursor-pointer ${
+                                isSelected
+                                  ? "bg-indigo-600 border-indigo-500 text-white"
+                                  : "bg-[#0F111A] border-[#2D3348] text-slate-400 hover:text-slate-200"
+                              }`}
+                            >
+                              {day.slice(0, 3)}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Toggles */}
+                    <div className="space-y-3 pt-2">
+                      {/* Holiday Check */}
+                      <div className="flex items-center justify-between">
+                        <div className="text-xs">
+                          <span className="font-bold text-white block">LLM Holiday & Weekend Filter</span>
+                          <span className="text-[10px] text-slate-500">Skips login automatically using Gemini AI</span>
+                        </div>
+                        <button
+                          onClick={() => setSettings({ ...settings, enableHolidayCheck: !settings.enableHolidayCheck })}
+                          className="text-slate-300 hover:text-white transition-colors cursor-pointer"
+                        >
+                          {settings.enableHolidayCheck ? (
+                            <ToggleRight className="h-8 w-8 text-indigo-400 fill-indigo-400/20" />
+                          ) : (
+                            <ToggleLeft className="h-8 w-8 text-slate-600" />
+                          )}
+                        </button>
+                      </div>
+
+                      {/* Randomize delay */}
+                      <div className="flex items-center justify-between">
+                        <div className="text-xs">
+                          <span className="font-bold text-white block">Simulate Human Behavior</span>
+                          <span className="text-[10px] text-slate-500">Adds randomized delay before logging in</span>
+                        </div>
+                        <button
+                          onClick={() => setSettings({ ...settings, randomizeLogin: !settings.randomizeLogin })}
+                          className="text-slate-300 hover:text-white transition-colors cursor-pointer"
+                        >
+                          {settings.randomizeLogin ? (
+                            <ToggleRight className="h-8 w-8 text-indigo-400 fill-indigo-400/20" />
+                          ) : (
+                            <ToggleLeft className="h-8 w-8 text-slate-600" />
+                          )}
+                        </button>
+                      </div>
+                    </div>
+
+                  </div>
+
+                  {/* Save config button */}
+                  <button
+                    onClick={() => handleSaveSettings(settings)}
+                    disabled={actionLoading}
+                    className="w-full bg-indigo-600 hover:bg-indigo-500 active:scale-98 text-white font-extrabold py-3.5 rounded-2xl text-xs transition-colors shadow-lg shadow-indigo-600/10 cursor-pointer uppercase tracking-wider block"
+                  >
+                    {actionLoading ? <Loader2 className="h-4.5 w-4.5 animate-spin mx-auto" /> : "Save Configuration"}
+                  </button>
+
+                </div>
+
+              </div>
+            )}
+
+          </div>
+
+        </main>
+
+        {/* Persistent Bottom Tab Navigation Bar */}
+        <footer id="app_footer" className="sticky bottom-0 z-40 bg-[#12141C] border-t border-[#2D3348] py-4 px-6 flex justify-around items-center shadow-lg">
+          
+          {/* Dashboard Tab */}
+          <button
+            onClick={() => setActiveTab("dashboard")}
+            className={`flex flex-col items-center gap-1.5 text-[11px] transition-colors cursor-pointer ${
+              activeTab === "dashboard" ? "text-indigo-400 font-bold" : "text-[#64748B] font-medium hover:text-slate-300"
+            }`}
+          >
+            <Clock className="h-5 w-5" />
+            <span>Control Panel</span>
+          </button>
+
+          {/* Console stdout Tab */}
+          <button
+            onClick={() => setActiveTab("logs")}
+            className={`flex flex-col items-center gap-1.5 text-[11px] transition-colors cursor-pointer ${
+              activeTab === "logs" ? "text-indigo-400 font-bold" : "text-[#64748B] font-medium hover:text-slate-300"
+            }`}
+          >
+            <Terminal className="h-5 w-5" />
+            <span>Console</span>
+          </button>
+
+          {/* Settings Tab */}
+          <button
+            onClick={() => setActiveTab("settings")}
+            className={`flex flex-col items-center gap-1.5 text-[11px] transition-colors cursor-pointer ${
+              activeTab === "settings" ? "text-indigo-400 font-bold" : "text-[#64748B] font-medium hover:text-slate-300"
+            }`}
+          >
+            <SettingsIcon className="h-5 w-5" />
+            <span>Setup</span>
+          </button>
+
+        </footer>
+
+      </div>
+
+    </div>
+  );
+}
