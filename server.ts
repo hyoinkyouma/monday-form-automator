@@ -158,7 +158,11 @@ async function seedDefaultFieldLabels() {
       log("Seeding default field labels in MongoDB collection 'field_labels'...", "DATABASE");
       const defaultLabels = [
         { key: "name", label: "Primary Account Name" },
-        { key: "email_mkrmv9fp", label: "Work email address" }
+        { key: "email_mkrmv9fp", label: "Work email address" },
+        { key: "color_mkrje2rg", label: "Monday Workgroup Option ID" },
+        { key: "booleanvky5wtu0", label: "Are you reporting for duty today?" },
+        { key: "boolean7kqnipqy", label: "Are you currently on annual leave / medical leave?" },
+        { key: "booleanimy35rjk", label: "Acknowledge health, safety, & location terms" }
       ];
       await mongoDb.collection("field_labels").insertMany(defaultLabels);
       log("Default field labels seeded successfully.", "DATABASE");
@@ -228,11 +232,11 @@ async function loadUsers() {
 
       const seedEmail = migratedSettings.email && migratedSettings.email !== "your-email@example.com"
         ? migratedSettings.email.toLowerCase().trim()
-        : "roman.cabalum@ibm.com";
+        : "your-email@example.com";
 
       const seedName = migratedSettings.employeeName && migratedSettings.employeeName !== "Employee Name"
         ? migratedSettings.employeeName
-        : "Roman Cabalum";
+        : "Your Name";
 
       users[seedEmail] = {
         id: seedEmail,
@@ -1208,6 +1212,15 @@ async function startServer() {
   app.get("/api/logs", requireAuth, (req, res) => {
     const user = (req as any).user as User;
     res.json({ status: "ok", logs: user.logs || [] });
+  });
+
+  // Explicit route for the Android version endpoint
+  app.get("/android", (req, res, next) => {
+    if (process.env.NODE_ENV !== "production") {
+      next();
+    } else {
+      res.sendFile(path.join(process.cwd(), "dist", "index.html"));
+    }
   });
 
 
