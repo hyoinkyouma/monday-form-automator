@@ -106,6 +106,22 @@ export default function App() {
   const [pythonCode, setPythonCode] = useState<string>("");
   const [importFeedback, setImportFeedback] = useState<{ success: boolean; message: string } | null>(null);
 
+  // Redirect to mobile
+  useEffect(() => {
+  const redirectToMobile = (): void => {
+    if (window.location.pathname === "/android") return;
+    
+    const userAgent: string = navigator.userAgent || navigator.vendor || (window as any).opera;
+    
+    const isMobile: boolean = /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini/i.test(userAgent);
+
+    if (isMobile) {
+      window.location.replace("/android");
+    }
+  };
+  redirectToMobile();
+  }, [])
+
   // Check session on mount
   useEffect(() => {
     const checkSession = async () => {
