@@ -1138,7 +1138,7 @@ export default function App() {
                           type="email"
                           value={settings.email}
                           onChange={(e) => setSettings({ ...settings, email: e.target.value })}
-                          placeholder="e.g. your@email.com
+                          placeholder="e.g. your@email.com"
                           className="w-full bg-[#0F111A] border border-[#2D3348] rounded-xl px-4 py-3 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-semibold"
                         />
                       </div>
@@ -1914,7 +1914,7 @@ export default function App() {
                           type="email"
                           value={settings.email}
                           onChange={(e) => setSettings({ ...settings, email: e.target.value })}
-                          placeholder="e.g. your@email.com
+                          placeholder="e.g. your@email.com"
                           className="w-full bg-[#0F111A] border border-[#2D3348] rounded-xl px-3.5 py-2.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-semibold"
                         />
                       </div>
