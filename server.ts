@@ -3,12 +3,14 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import dotenv from "dotenv";
 import fs from "fs";
+import crypto from "crypto";
 import { GoogleGenAI } from "@google/genai";
+import { MongoClient, Db } from "mongodb";
 
 dotenv.config();
 
-// Default Settings
-interface AppSettings {
+// User and Settings Interfaces
+export interface AppSettings {
   email: string;
   password?: string;
   url: string;
@@ -21,12 +23,77 @@ interface AppSettings {
   answersJson: string;
   sessionCookie?: string;
   geminiApiKey?: string;
+  useDaySpecificJson?: boolean;
+  daySpecificAnswersJson?: Record<string, string>;
+}
+
+export interface LogEntry {
+  timestamp: string;
+  message: string;
+  section: string;
+}
+
+export interface User {
+  id: string; // unique ID or lowercased email
+  email: string;
+  passwordHash: string;
+  employeeName: string;
+  settings: AppSettings;
+  logs: LogEntry[];
+  lastLoginTime?: string | null;
+  lastExecutedDay?: string | null;
 }
 
 const SETTINGS_FILE = path.join(process.cwd(), "settings.json");
+const USERS_FILE = path.join(process.cwd(), "users.json");
 
-// Non-sensitive placeholders inside the source code defaults
-let settings: AppSettings = {
+// Memory Cache for Active Sessions (Session ID -> User Email)
+const activeSessions: Record<string, string> = {};
+
+// In-Memory database loaded on boot
+let users: Record<string, User> = {};
+
+// Global system logs (replaces serverLogs)
+const serverLogs: LogEntry[] = [];
+
+function log(message: string, section = "SYSTEM") {
+  const timestamp = new Date().toISOString();
+  console.log(`[${section}] ${timestamp} - ${message}`);
+  serverLogs.push({ timestamp, message, section });
+  if (serverLogs.length > 500) {
+    serverLogs.shift();
+  }
+}
+
+// User-specific logging helper
+function logForUser(user: User, message: string, section = "APP") {
+  const timestamp = new Date().toISOString();
+  console.log(`[USER:${user.email}] [${section}] ${message}`);
+  
+  // Push to user's local logs
+  if (!user.logs) user.logs = [];
+  user.logs.push({ timestamp, message, section });
+  if (user.logs.length > 150) {
+    user.logs.shift();
+  }
+
+  // Push to global dashboard feed with user prefix
+  serverLogs.push({ timestamp, message: `[${user.employeeName}] ${message}`, section });
+  if (serverLogs.length > 500) {
+    serverLogs.shift();
+  }
+  
+  saveUsers(user.email);
+}
+
+// Native crypto password hashing
+function hashPassword(password: string): string {
+  const salt = "attendance_reporter_salt_2026_secure";
+  return crypto.pbkdf2Sync(password, salt, 1000, 64, "sha512").toString("hex");
+}
+
+// Initial default settings object to seed new profiles
+const defaultSettings: AppSettings = {
   email: "your-email@example.com",
   password: "",
   url: "https://forms.monday.com/workforms/external/forms/YOUR_FORM_ID/submissions?r=use1",
@@ -49,77 +116,183 @@ let settings: AppSettings = {
     tags: []
   }, null, 2),
   sessionCookie: "",
-  geminiApiKey: ""
+  geminiApiKey: "",
+  useDaySpecificJson: false,
+  daySpecificAnswersJson: {
+    monday: "",
+    tuesday: "",
+    wednesday: "",
+    thursday: "",
+    friday: "",
+    saturday: "",
+    sunday: ""
+  }
 };
 
-// Sync settings with environment variables holding credentials
-function loadEnvCredentials() {
+// Initialize MongoDB client if env var is set
+let mongoClient: MongoClient | null = null;
+let mongoDb: Db | null = null;
+
+async function initMongoDB() {
+  const uri = process.env.MONGODB_URI;
+  if (!uri) {
+    log("MONGODB_URI not set. Falling back to local JSON database storage.", "MONGODB");
+    return;
+  }
   try {
-    log("Checking environment variables for sensitive credentials...", "APP");
-    
-    const updated: Partial<AppSettings> = {};
-    if (process.env.EMPLOYEE_EMAIL) updated.email = process.env.EMPLOYEE_EMAIL;
-    if (process.env.EMPLOYEE_NAME) updated.employeeName = process.env.EMPLOYEE_NAME;
-    if (process.env.WORKFORMS_URL) updated.url = process.env.WORKFORMS_URL;
-    if (process.env.WORKFORMS_ANSWERS_JSON) updated.answersJson = process.env.WORKFORMS_ANSWERS_JSON;
-    if (process.env.MONDAY_SESSION_COOKIE) updated.sessionCookie = process.env.MONDAY_SESSION_COOKIE;
-    if (process.env.WORKFORMS_COOKIE) updated.sessionCookie = process.env.WORKFORMS_COOKIE;
-    if (process.env.GEMINI_API_KEY) updated.geminiApiKey = process.env.GEMINI_API_KEY;
-    
-    settings = { ...settings, ...updated };
-    log("Successfully synced sensitive credentials from environment variables (.env)", "APP");
+    log("Connecting to MongoDB database...", "MONGODB");
+    mongoClient = new MongoClient(uri);
+    await mongoClient.connect();
+    mongoDb = mongoClient.db();
+    log("MongoDB connected successfully.", "MONGODB");
   } catch (err: any) {
-    log(`Error loading environment credentials: ${err.message}`, "APP");
+    log(`Failed to connect to MongoDB: ${err.message}. Falling back to local JSON database.`, "MONGODB_ERROR");
   }
 }
 
-// Load settings from file
-function loadSettings() {
+async function seedDefaultFieldLabels() {
+  if (!mongoDb) return;
   try {
-    if (fs.existsSync(SETTINGS_FILE)) {
-      const data = fs.readFileSync(SETTINGS_FILE, "utf-8");
-      settings = { ...settings, ...JSON.parse(data) };
-      log("Settings loaded from file successfully", "APP");
-    } else {
-      saveSettingsToFile();
-      log("Created default settings.json", "APP");
+    const count = await mongoDb.collection("field_labels").countDocuments();
+    if (count === 0) {
+      log("Seeding default field labels in MongoDB collection 'field_labels'...", "DATABASE");
+      const defaultLabels = [
+        { key: "name", label: "Primary Account Name" },
+        { key: "email_mkrmv9fp", label: "Work email address" }
+      ];
+      await mongoDb.collection("field_labels").insertMany(defaultLabels);
+      log("Default field labels seeded successfully.", "DATABASE");
     }
-    
-    // Always override with .env credentials
-    loadEnvCredentials();
-  } catch (error: any) {
-    log(`Error loading settings from file: ${error.message}`, "APP");
+  } catch (err: any) {
+    log(`Error seeding field labels: ${err.message}`, "DATABASE_ERROR");
   }
 }
 
-function saveSettingsToFile() {
+// Load users database on startup and perform seamless legacy migration
+async function loadUsers() {
   try {
-    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 4), "utf-8");
-  } catch (error: any) {
-    log(`Error writing settings to file: ${error.message}`, "APP");
+    if (mongoDb) {
+      log("Loading users from MongoDB...", "DATABASE");
+      const dbUsers = await mongoDb.collection<User>("users").find({}).toArray();
+      if (dbUsers && dbUsers.length > 0) {
+        users = {};
+        for (const dbUser of dbUsers) {
+          const cleanUser = { ...dbUser };
+          delete (cleanUser as any)._id; // Clean _id so we don't keep MongoDB's ObjectId
+          users[cleanUser.email] = cleanUser;
+        }
+        log(`Loaded ${dbUsers.length} users successfully from MongoDB.`, "DATABASE");
+        return;
+      } else {
+        log("No users found in MongoDB collection 'users'. Checking for local file or seeding...", "DATABASE");
+      }
+    }
+
+    if (fs.existsSync(USERS_FILE)) {
+      const data = fs.readFileSync(USERS_FILE, "utf-8");
+      users = JSON.parse(data);
+      log("Users database loaded successfully from local file.", "DATABASE");
+      
+      // If MongoDB is connected but has no users, seed it from local file
+      if (mongoDb && Object.keys(users).length > 0) {
+        log("Seeding MongoDB with users from local backup file...", "DATABASE");
+        const ops = Object.values(users).map(user => ({
+          updateOne: {
+            filter: { email: user.email },
+            update: { $set: user },
+            upsert: true
+          }
+        }));
+        await mongoDb.collection("users").bulkWrite(ops);
+        log("MongoDB successfully seeded from local backup.", "DATABASE");
+      }
+    } else {
+      log("No users database found. Looking for legacy single-user settings to migrate...", "DATABASE");
+      let migratedSettings = { ...defaultSettings };
+      
+      if (fs.existsSync(SETTINGS_FILE)) {
+        try {
+          const sData = fs.readFileSync(SETTINGS_FILE, "utf-8");
+          migratedSettings = { ...migratedSettings, ...JSON.parse(sData) };
+          log("Discovered legacy settings.json file. Carrying configurations forward...", "MIGRATION");
+        } catch (e) {
+          log("Failed reading legacy settings.json.", "MIGRATION");
+        }
+      }
+
+      // Sync environment variables on first-run if present
+      if (process.env.EMPLOYEE_EMAIL) migratedSettings.email = process.env.EMPLOYEE_EMAIL;
+      if (process.env.EMPLOYEE_NAME) migratedSettings.employeeName = process.env.EMPLOYEE_NAME;
+      if (process.env.WORKFORMS_URL) migratedSettings.url = process.env.WORKFORMS_URL;
+      if (process.env.GEMINI_API_KEY) migratedSettings.geminiApiKey = process.env.GEMINI_API_KEY;
+
+      const seedEmail = migratedSettings.email && migratedSettings.email !== "your-email@example.com"
+        ? migratedSettings.email.toLowerCase().trim()
+        : "roman.cabalum@ibm.com";
+
+      const seedName = migratedSettings.employeeName && migratedSettings.employeeName !== "Employee Name"
+        ? migratedSettings.employeeName
+        : "Roman Cabalum";
+
+      users[seedEmail] = {
+        id: seedEmail,
+        email: seedEmail,
+        passwordHash: hashPassword("password"), // Default password to seed
+        employeeName: seedName,
+        settings: { ...migratedSettings, email: seedEmail, employeeName: seedName },
+        logs: [],
+        lastLoginTime: null,
+        lastExecutedDay: null
+      };
+
+      saveUsers();
+      log(`Created new database and seeded primary account: ${seedEmail} (Default password: password)`, "DATABASE");
+    }
+  } catch (err: any) {
+    log(`Error loading users database: ${err.message}`, "DATABASE");
   }
 }
 
-// Logs tracking
-interface LogEntry {
-  timestamp: string;
-  message: string;
-  section: string;
-}
-const serverLogs: LogEntry[] = [];
+function saveUsers(specificUserEmail?: string) {
+  try {
+    fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 4), "utf-8");
+  } catch (err: any) {
+    log(`Error writing local users database backup: ${err.message}`, "DATABASE");
+  }
 
-function log(message: string, section = "APP") {
-  const timestamp = new Date().toISOString();
-  console.log(`[${section}] ${timestamp} - ${message}`);
-  serverLogs.push({ timestamp, message, section });
-  if (serverLogs.length > 300) {
-    serverLogs.shift();
+  // Asynchronously upsert to MongoDB if connected
+  if (mongoDb) {
+    if (specificUserEmail) {
+      const user = users[specificUserEmail];
+      if (user) {
+        mongoDb.collection("users").updateOne(
+          { email: specificUserEmail },
+          { $set: user },
+          { upsert: true }
+        ).catch(err => {
+          log(`Error upserting user ${specificUserEmail} to MongoDB: ${err.message}`, "MONGODB_ERROR");
+        });
+      }
+    } else {
+      const ops = Object.values(users).map(user => ({
+        updateOne: {
+          filter: { email: user.email },
+          update: { $set: user },
+          upsert: true
+        }
+      }));
+      if (ops.length > 0) {
+        mongoDb.collection("users").bulkWrite(ops).catch(err => {
+          log(`Error bulk upserting users to MongoDB: ${err.message}`, "MONGODB_ERROR");
+        });
+      }
+    }
   }
 }
 
-// Lazy load Gemini API
-function getGeminiClient(): GoogleGenAI | null {
-  const key = settings.geminiApiKey?.trim() || process.env.GEMINI_API_KEY?.trim();
+// Lazy load Gemini API with user key or system fallback
+function getGeminiClient(geminiApiKey?: string): GoogleGenAI | null {
+  const key = geminiApiKey?.trim() || process.env.GEMINI_API_KEY?.trim();
   if (!key) {
     return null;
   }
@@ -172,8 +345,9 @@ async function waitMs(ms: number) {
 }
 
 // LLM Public Holiday and Weekend Checker with Local Bypasses, Retry Logic, and Fallback Models
-async function isHolidayOrWeekendLLM(): Promise<{ isHolidayOrWeekend: boolean; reason: string }> {
-  log("Analyzing if today is a public holiday or weekend in Singapore...", "HOLIDAY_CHECK");
+async function isHolidayOrWeekendLLM(geminiApiKey?: string, user?: User): Promise<{ isHolidayOrWeekend: boolean; reason: string }> {
+  const logHelper = user ? (msg: string) => logForUser(user, msg, "HOLIDAY_CHECK") : (msg: string) => log(msg, "HOLIDAY_CHECK");
+  logHelper("Analyzing if today is a public holiday or weekend in Singapore...");
   try {
     const today = new Date();
     
@@ -185,7 +359,7 @@ async function isHolidayOrWeekendLLM(): Promise<{ isHolidayOrWeekend: boolean; r
     const sgWeekday = weekdayFormatter.format(today);
     
     if (sgWeekday === "Saturday" || sgWeekday === "Sunday") {
-      log(`Local pre-check: Today is ${sgWeekday} (weekend) in Singapore. Bypassing LLM call.`, "HOLIDAY_CHECK");
+      logHelper(`Local pre-check: Today is ${sgWeekday} (weekend) in Singapore. Bypassing LLM call.`);
       return { isHolidayOrWeekend: true, reason: `Today is ${sgWeekday} (weekend)` };
     }
 
@@ -204,7 +378,7 @@ async function isHolidayOrWeekendLLM(): Promise<{ isHolidayOrWeekend: boolean; r
 
     if (SINGAPORE_HOLIDAYS[sgDateStr]) {
       const holidayName = SINGAPORE_HOLIDAYS[sgDateStr];
-      log(`Local pre-check: Today is ${holidayName} (${sgDateStr}) in Singapore. Bypassing LLM call.`, "HOLIDAY_CHECK");
+      logHelper(`Local pre-check: Today is ${holidayName} (${sgDateStr}) in Singapore. Bypassing LLM call.`);
       return { isHolidayOrWeekend: true, reason: `Today is ${holidayName} (public holiday)` };
     }
 
@@ -229,16 +403,16 @@ Example response:
 
 Do not return any markdown formatting outside the JSON object itself. Ensure it is valid JSON.`;
 
-    const ai = getGeminiClient();
+    const ai = getGeminiClient(geminiApiKey);
     if (!ai) {
-      log("No Gemini API key configured in Settings or environment. Bypassing LLM check and assuming a working day.", "HOLIDAY_CHECK");
+      logHelper("No Gemini API key configured in Settings or environment. Bypassing LLM check and assuming a working day.");
       return { isHolidayOrWeekend: false, reason: "No Gemini API key provided. Assuming standard working day." };
     }
     const modelsToTry = ["gemini-3.5-flash", "gemini-3.1-flash-lite"];
     let lastError: any = null;
 
     for (const model of modelsToTry) {
-      log(`Attempting Gemini query with model: ${model}...`, "HOLIDAY_CHECK");
+      logHelper(`Attempting Gemini query with model: ${model}...`);
       for (let attempt = 1; attempt <= 3; attempt++) {
         try {
           const response = await ai.models.generateContent({
@@ -251,17 +425,17 @@ Do not return any markdown formatting outside the JSON object itself. Ensure it 
 
           const text = response.text || "";
           const parsed = JSON.parse(text.trim());
-          log(`Successfully checked holiday status with model ${model} on attempt ${attempt}.`, "HOLIDAY_CHECK");
+          logHelper(`Successfully checked holiday status with model ${model} on attempt ${attempt}.`);
           return {
             isHolidayOrWeekend: !!parsed.isHolidayOrWeekend,
             reason: parsed.reason || "Determined by Gemini LLM"
           };
         } catch (error: any) {
           lastError = error;
-          log(`Attempt ${attempt} using ${model} failed: ${error.message}`, "HOLIDAY_CHECK");
+          logHelper(`Attempt ${attempt} using ${model} failed: ${error.message}`);
           if (attempt < 3) {
             const backoffTime = attempt * 1000;
-            log(`Waiting ${backoffTime}ms before retrying...`, "HOLIDAY_CHECK");
+            logHelper(`Waiting ${backoffTime}ms before retrying...`);
             await waitMs(backoffTime);
           }
         }
@@ -270,7 +444,7 @@ Do not return any markdown formatting outside the JSON object itself. Ensure it 
 
     throw lastError || new Error("Failed all Gemini LLM connection attempts.");
   } catch (error: any) {
-    log(`All holiday checks failed or error occurred: ${error.message}. Defaulting to false (working day).`, "HOLIDAY_CHECK");
+    logHelper(`All holiday checks failed or error occurred: ${error.message}. Defaulting to false (working day).`);
     return { isHolidayOrWeekend: false, reason: "Error query or missing Gemini key: assume standard working day." };
   }
 }
@@ -316,13 +490,30 @@ function mergeCookies(existingCookieHeader: string, setCookieHeaders: string[]):
 // Main autologin function
 let lastLoginTime: string | null = null;
 
-async function doAutoLogin(isManual = false, overrideCookie?: string) {
+// Main autologin function
+async function doAutoLogin(user: User, isManual = false, overrideCookie?: string) {
+  const settings = user.settings;
+  const log = (msg: string, sec = "APP") => logForUser(user, msg, sec);
+
   log("Starting AutoLogin process...", isManual ? "MANUAL_TEST" : "SCHEDULER_CALLBACK");
+
+  // Determine current day name for day-specific JSON body
+  const dayName = new Date().toLocaleDateString("en-US", { weekday: "long", timeZone: "Asia/Singapore" }).toLowerCase();
+  let answersJsonToUse = settings.answersJson;
+  if (settings.useDaySpecificJson && settings.daySpecificAnswersJson) {
+    const specificJson = settings.daySpecificAnswersJson[dayName];
+    if (specificJson && specificJson.trim()) {
+      answersJsonToUse = specificJson;
+      log(`Using day-specific JSON body configured for ${dayName}.`, "APP");
+    } else {
+      log(`Day-specific JSON body enabled but no custom payload configured for ${dayName}. Falling back to default JSON body.`, "APP");
+    }
+  }
 
   // 1. Holiday Check
   if (settings.enableHolidayCheck) {
     try {
-      const holidayInfo = await isHolidayOrWeekendLLM();
+      const holidayInfo = await isHolidayOrWeekendLLM(settings.geminiApiKey, user);
       log(`Holiday analyzer result: ${JSON.stringify(holidayInfo)}`, "APP");
       if (holidayInfo.isHolidayOrWeekend) {
         log(`Today is a public holiday or weekend (${holidayInfo.reason}). Skipping automatic login.`, "APP");
@@ -364,7 +555,7 @@ async function doAutoLogin(isManual = false, overrideCookie?: string) {
 
   let focusField = "color_mkrje2rg";
   try {
-    const answersObj = JSON.parse(settings.answersJson);
+    const answersObj = JSON.parse(answersJsonToUse);
     if (answersObj && answersObj.answers) {
       const foundKey = Object.keys(answersObj.answers).find(k => k.startsWith("color_") || (k !== "name" && !k.startsWith("email_")));
       if (foundKey) {
@@ -631,7 +822,7 @@ async function doAutoLogin(isManual = false, overrideCookie?: string) {
   log(`Executing Form submission to: ${settings.url}...`, "APP");
 
   // Submit actual form payload
-  const parsedAnswers = JSON.parse(settings.answersJson);
+  const parsedAnswers = JSON.parse(answersJsonToUse);
 
   // Overwrite the email if defined in settings
   if (settings.email && parsedAnswers.answers) {
@@ -671,14 +862,14 @@ async function doAutoLogin(isManual = false, overrideCookie?: string) {
     throw new Error("Form requires authentication. Please paste your Monday Session Cookies in the Settings tab.");
   }
 
-  lastLoginTime = new Date().toLocaleString();
+  user.lastLoginTime = new Date().toLocaleString();
+  saveUsers(user.email);
   log(`Form autologin submission successfully executed for ${settings.email}!`, "APP");
   return { success: true, method: "form", response: resData };
 }
 
 // Server-side active scheduler tracking
 let schedulerInterval: NodeJS.Timeout | null = null;
-let lastExecutedDay: string | null = null; // Prevent multi-triggers on the same day
 
 function runSchedulerCheck() {
   const now = new Date();
@@ -691,25 +882,33 @@ function runSchedulerCheck() {
     hour12: false,
     hour: "2-digit",
     minute: "2-digit",
-    timeZone: "Asia/Singapore" // Standardize on their timezone from Python code (offset -480 / UTC+8)
+    timeZone: "Asia/Singapore" // Standardize on Singapore timezone (offset -480 / UTC+8)
   });
 
   const todayDateString = now.toLocaleDateString("en-US", { timeZone: "Asia/Singapore" });
 
-  // Debug log every few minutes to show scheduler is alive
+  const activeUsersList = Object.values(users);
+
+  // Debug log every 15 minutes to show scheduler is alive
   if (now.getMinutes() % 15 === 0 && now.getSeconds() === 0) {
-    log(`Scheduler active. Watching day: [${settings.days.join(", ")}], time: [${settings.loginTime}]. Current: [${dayName} @ ${currentHHMM}]`, "SCHEDULER");
+    log(`Scheduler active. Scanning matches for ${activeUsersList.length} user profiles. Current time: [Singapore: ${dayName} @ ${currentHHMM}]`, "SCHEDULER");
   }
 
-  // Trigger conditions
-  if (settings.days.includes(dayName)) {
-    if (currentHHMM === settings.loginTime) {
-      if (lastExecutedDay !== todayDateString) {
-        lastExecutedDay = todayDateString;
-        log(`Trigger match! It is ${dayName} at exactly ${currentHHMM}. Launching autologin callback...`, "SCHEDULER");
-        doAutoLogin(false).catch((err) => {
-          log(`Scheduler execution failed: ${err.message}`, "SCHEDULER_ERROR");
-        });
+  for (const user of activeUsersList) {
+    const settings = user.settings;
+    if (!settings) continue;
+
+    // Trigger conditions per user
+    if (settings.days.includes(dayName)) {
+      if (currentHHMM === settings.loginTime) {
+        if (user.lastExecutedDay !== todayDateString) {
+          user.lastExecutedDay = todayDateString;
+          saveUsers(user.email);
+          logForUser(user, `Scheduler Trigger Match! It is ${dayName} at exactly ${currentHHMM}. Executing automated submission...`, "SCHEDULER");
+          doAutoLogin(user, false).catch((err) => {
+            logForUser(user, `Scheduler execution failed: ${err.message}`, "SCHEDULER_ERROR");
+          });
+        }
       }
     }
   }
@@ -733,9 +932,33 @@ function stopSchedulerService() {
   }
 }
 
+// Helper to retrieve user from session token parsed from cookie header
+function getSessionUser(req: express.Request): User | null {
+  const cookieHeader = req.headers.cookie;
+  if (!cookieHeader) return null;
+  const match = cookieHeader.match(/session_token=([^;]+)/);
+  if (!match) return null;
+  const token = match[1].trim();
+  const email = activeSessions[token];
+  if (!email) return null;
+  return users[email] || null;
+}
+
+// Authentication middleware
+const requireAuth = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+  const user = getSessionUser(req);
+  if (!user) {
+    return res.status(401).json({ status: "error", message: "Unauthorized. Please log in first." });
+  }
+  (req as any).user = user;
+  next();
+};
+
 // Initialize server logic
 async function startServer() {
-  loadSettings();
+  await initMongoDB();
+  await seedDefaultFieldLabels();
+  await loadUsers();
   
   // Always start the scheduler daemon automatically on server boot, matching background execution
   startSchedulerService();
@@ -745,14 +968,38 @@ async function startServer() {
 
   app.use(express.json());
 
+  // API Route: Field labels GET from MongoDB
+  app.get("/api/field-labels", (req, res) => {
+    if (mongoDb) {
+      mongoDb.collection("field_labels").find({}).toArray()
+        .then(docs => {
+          const labelsMap: Record<string, string> = {};
+          for (const doc of docs) {
+            if (doc.key && doc.label) {
+              labelsMap[doc.key] = doc.label;
+            }
+          }
+          res.json({ status: "ok", labels: labelsMap });
+        })
+        .catch(err => {
+          log(`Error fetching field labels from MongoDB: ${err.message}`, "MONGODB_ERROR");
+          res.json({ status: "ok", labels: {} });
+        });
+    } else {
+      res.json({ status: "ok", labels: {} });
+    }
+  });
+
   // API Route: Settings GET
-  app.get("/api/settings", (req, res) => {
-    res.json({ status: "ok", data: settings });
+  app.get("/api/settings", requireAuth, (req, res) => {
+    const user = (req as any).user as User;
+    res.json({ status: "ok", data: user.settings });
   });
 
   // API Route: Settings POST
-  app.post("/api/settings", (req, res) => {
+  app.post("/api/settings", requireAuth, (req, res) => {
     try {
+      const user = (req as any).user as User;
       const body = { ...req.body };
       
       // Support any spelling of cookies they programmatically push
@@ -761,51 +1008,179 @@ async function startServer() {
         body.sessionCookie = incomingCookie;
       }
 
-      settings = { ...settings, ...body };
-      saveSettingsToFile();
-      log(`Settings updated from API: ${JSON.stringify(req.body)}`, "API");
+      user.settings = { ...user.settings, ...body };
+      saveUsers(user.email);
+      logForUser(user, `Settings updated successfully via Portal API.`, "API");
       res.json({ status: "ok", message: "Settings saved successfully" });
     } catch (error: any) {
-      log(`Error saving settings: ${error.message}`, "API");
       res.status(500).json({ status: "error", message: error.message });
     }
   });
+  // === Authentication Endpoints ===
+
+  // API Route: Register
+  app.post("/api/auth/register", (req, res) => {
+    try {
+      const { email, password, employeeName } = req.body;
+      if (!email || !password || !employeeName) {
+        return res.status(400).json({ status: "error", message: "All fields are required" });
+      }
+      const cleanEmail = email.toLowerCase().trim();
+      if (users[cleanEmail]) {
+        return res.status(400).json({ status: "error", message: "A user with this email already exists" });
+      }
+
+      const newUser: User = {
+        id: cleanEmail,
+        email: cleanEmail,
+        passwordHash: hashPassword(password),
+        employeeName: employeeName.trim(),
+        settings: {
+          ...defaultSettings,
+          email: cleanEmail,
+          employeeName: employeeName.trim()
+        },
+        logs: [],
+        lastLoginTime: null,
+        lastExecutedDay: null
+      };
+
+      users[cleanEmail] = newUser;
+      saveUsers(cleanEmail);
+
+      // Log in immediately
+      const token = crypto.randomBytes(32).toString("hex");
+      activeSessions[token] = cleanEmail;
+      res.cookie("session_token", token, {
+        httpOnly: true,
+        secure: true,
+        maxAge: 30 * 24 * 60 * 60 * 1000,
+        sameSite: "none"
+      });
+
+      log(`User registered successfully: ${cleanEmail}`, "AUTH");
+      res.json({
+        status: "ok",
+        user: {
+          email: newUser.email,
+          employeeName: newUser.employeeName,
+          settings: newUser.settings,
+          lastLoginTime: newUser.lastLoginTime
+        }
+      });
+    } catch (error: any) {
+      log(`Registration error: ${error.message}`, "AUTH");
+      res.status(500).json({ status: "error", message: error.message });
+    }
+  });
+
+  // API Route: Login
+  app.post("/api/auth/login", (req, res) => {
+    try {
+      const { email, password } = req.body;
+      if (!email || !password) {
+        return res.status(400).json({ status: "error", message: "Email and password are required" });
+      }
+      const cleanEmail = email.toLowerCase().trim();
+      const user = users[cleanEmail];
+      if (!user || user.passwordHash !== hashPassword(password)) {
+        return res.status(401).json({ status: "error", message: "Invalid email or password" });
+      }
+
+      const token = crypto.randomBytes(32).toString("hex");
+      activeSessions[token] = cleanEmail;
+      res.cookie("session_token", token, {
+        httpOnly: true,
+        secure: true,
+        maxAge: 30 * 24 * 60 * 60 * 1000,
+        sameSite: "none"
+      });
+
+      log(`User logged in successfully: ${cleanEmail}`, "AUTH");
+      res.json({
+        status: "ok",
+        user: {
+          email: user.email,
+          employeeName: user.employeeName,
+          settings: user.settings,
+          lastLoginTime: user.lastLoginTime
+        }
+      });
+    } catch (error: any) {
+      log(`Login error: ${error.message}`, "AUTH");
+      res.status(500).json({ status: "error", message: error.message });
+    }
+  });
+
+  // API Route: Logout
+  app.post("/api/auth/logout", (req, res) => {
+    const cookieHeader = req.headers.cookie;
+    if (cookieHeader) {
+      const match = cookieHeader.match(/session_token=([^;]+)/);
+      if (match) {
+        const token = match[1].trim();
+        delete activeSessions[token];
+      }
+    }
+    res.clearCookie("session_token", { httpOnly: true, secure: true, sameSite: "none" });
+    res.json({ status: "ok", message: "Logged out successfully" });
+  });
+
+  // API Route: Get Active Session Profile
+  app.get("/api/auth/me", (req, res) => {
+    const user = getSessionUser(req);
+    if (!user) {
+      return res.json({ status: "ok", user: null });
+    }
+    res.json({
+      status: "ok",
+      user: {
+        email: user.email,
+        employeeName: user.employeeName,
+        settings: user.settings,
+        lastLoginTime: user.lastLoginTime
+      }
+    });
+  });
+
+  // === Secured Portal Endpoints ===
+
   // API Route: Scheduler Start
-  app.post("/api/scheduler/start", (req, res) => {
+  app.post("/api/scheduler/start", requireAuth, (req, res) => {
     try {
       startSchedulerService();
-      res.json({ status: "ok", message: "Scheduler started" });
+      res.json({ status: "ok", message: "Global Scheduler daemon started" });
     } catch (error: any) {
-      log(`Error starting scheduler: ${error.message}`, "API");
       res.status(500).json({ status: "error", message: error.message });
     }
   });
 
   // API Route: Scheduler Stop
-  app.post("/api/scheduler/stop", (req, res) => {
+  app.post("/api/scheduler/stop", requireAuth, (req, res) => {
     try {
       stopSchedulerService();
-      res.json({ status: "ok", message: "Scheduler stopped" });
+      res.json({ status: "ok", message: "Global Scheduler daemon stopped" });
     } catch (error: any) {
-      log(`Error stopping scheduler: ${error.message}`, "API");
       res.status(500).json({ status: "error", message: error.message });
     }
   });
 
   // API Route: Scheduler Status GET
-  app.get("/api/scheduler/status", (req, res) => {
+  app.get("/api/scheduler/status", requireAuth, (req, res) => {
+    const user = (req as any).user as User;
     res.json({
       status: "ok",
       running: schedulerInterval !== null,
-      settings,
-      lastLoginTime
+      settings: user.settings,
+      lastLoginTime: user.lastLoginTime
     });
   });
 
   // API Route: Test Login immediately
-  app.post("/api/login/test", async (req, res) => {
+  app.post("/api/login/test", requireAuth, async (req, res) => {
+    const user = (req as any).user as User;
     try {
-      log("Testing login immediately from API request...", "API");
+      logForUser(user, "Testing manual autologin submission immediately...", "API");
       
       // Support cookies passed directly in the request body or standard headers
       const bodyCookie = req.body?.sessionCookie || req.body?.workforms_cookie || req.body?.cookie || req.body?.WORKFORMS_COOKIE || req.body?.MONDAY_SESSION_COOKIE;
@@ -818,20 +1193,21 @@ async function startServer() {
           : undefined;
 
       if (overrideCookie) {
-        log("Received a programmatically provided cookie in the API test request.", "API");
+        logForUser(user, "Received a programmatically provided cookie in the API test request.", "API");
       }
 
-      const result = await doAutoLogin(true, overrideCookie);
+      const result = await doAutoLogin(user, true, overrideCookie);
       res.json({ status: "ok", message: "Login test completed successfully", result });
     } catch (error: any) {
-      log(`Error executing login test: ${error.message}`, "API");
+      logForUser(user, `Error executing login test: ${error.message}`, "API");
       res.status(500).json({ status: "error", message: error.message });
     }
   });
 
   // API Route: Retrieve backend console logs for UI display
-  app.get("/api/logs", (req, res) => {
-    res.json({ status: "ok", logs: serverLogs });
+  app.get("/api/logs", requireAuth, (req, res) => {
+    const user = (req as any).user as User;
+    res.json({ status: "ok", logs: user.logs || [] });
   });
 
 

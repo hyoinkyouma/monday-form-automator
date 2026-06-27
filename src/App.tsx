@@ -54,26 +54,48 @@ interface AppSettings {
   answersJson: string;
   sessionCookie?: string;
   geminiApiKey?: string;
+  useDaySpecificJson?: boolean;
+  daySpecificAnswersJson?: Record<string, string>;
 }
 
 export default function App() {
   // Navigation tabs: 'dashboard' | 'logs' | 'settings'
   const [activeTab, setActiveTab] = useState<"dashboard" | "logs" | "settings">("dashboard");
 
+  // User Authentication state
+  const [currentUser, setCurrentUser] = useState<{ email: string; employeeName: string; settings: AppSettings; lastLoginTime: string | null } | null>(null);
+  const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authEmployeeName, setAuthEmployeeName] = useState("");
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [isMeLoaded, setIsMeLoaded] = useState(false);
+
   // State loaded from server
   const [settings, setSettings] = useState<AppSettings>({
-    email: "roman.cabalum@ibm.com",
+    email: "your@email.com",
     password: "",
     url: "https://forms.monday.com/workforms/external/forms/726fd8547dbaa83d6c0d70f891d97be7/submissions?r=use1",
     loginTime: "08:30",
     checkInterval: 60,
     days: ["monday", "tuesday", "wednesday", "thursday", "friday"],
-    enableHolidayCheck: true,
+    enableHolidayCheck: false,
     randomizeLogin: true,
-    employeeName: "Roman Cabalum",
+    employeeName: "Your Name",
     answersJson: "{}",
     sessionCookie: "",
-    geminiApiKey: ""
+    geminiApiKey: "",
+    useDaySpecificJson: false,
+    daySpecificAnswersJson: {
+      monday: "",
+      tuesday: "",
+      wednesday: "",
+      thursday: "",
+      friday: "",
+      saturday: "",
+      sunday: ""
+    }
   });
 
   const [isSchedulerRunning, setIsSchedulerRunning] = useState<boolean>(true);
@@ -83,12 +105,134 @@ export default function App() {
   // Local/UI editing states
   const [pythonCode, setPythonCode] = useState<string>("");
   const [importFeedback, setImportFeedback] = useState<{ success: boolean; message: string } | null>(null);
+
+  // Check session on mount
+  useEffect(() => {
+    const checkSession = async () => {
+      try {
+        const res = await fetch("/api/auth/me");
+        const result = await res.json();
+        if (result.status === "ok" && result.user) {
+          setCurrentUser(result.user);
+          setSettings(result.user.settings);
+          setLastLoginTime(result.user.lastLoginTime);
+        }
+      } catch (err) {
+        console.error("Session check error:", err);
+      } finally {
+        setIsMeLoaded(true);
+      }
+    };
+    checkSession();
+  }, []);
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authEmail.trim() || !authPassword) {
+      setAuthError("Please fill in all fields.");
+      return;
+    }
+    try {
+      setAuthLoading(true);
+      setAuthError(null);
+      const res = await fetch("/api/auth/login", {
+         method: "POST",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify({ email: authEmail, password: authPassword })
+      });
+      const result = await res.json();
+      if (result.status === "ok") {
+        setCurrentUser(result.user);
+        setSettings(result.user.settings);
+        setLastLoginTime(result.user.lastLoginTime);
+        setAuthPassword("");
+        setFeedbackMsg({ type: "success", text: "Logged in successfully!" });
+        setTimeout(() => setFeedbackMsg(null), 3500);
+      } else {
+        setAuthError(result.message || "Invalid credentials");
+      }
+    } catch (err: any) {
+      setAuthError("Failed to connect to server");
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authEmail.trim() || !authPassword || !authEmployeeName.trim()) {
+      setAuthError("Please fill in all fields.");
+      return;
+    }
+    try {
+      setAuthLoading(true);
+      setAuthError(null);
+      const res = await fetch("/api/auth/register", {
+         method: "POST",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify({ email: authEmail, password: authPassword, employeeName: authEmployeeName })
+      });
+      const result = await res.json();
+      if (result.status === "ok") {
+        setCurrentUser(result.user);
+        setSettings(result.user.settings);
+        setLastLoginTime(result.user.lastLoginTime);
+        setAuthPassword("");
+        setFeedbackMsg({ type: "success", text: "Account registered successfully!" });
+        setTimeout(() => setFeedbackMsg(null), 3500);
+      } else {
+        setAuthError(result.message || "Registration failed");
+      }
+    } catch (err: any) {
+      setAuthError("Failed to connect to server");
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+      setCurrentUser(null);
+      setSettings({
+        email: "",
+        password: "",
+        url: "",
+        loginTime: "08:30",
+        checkInterval: 60,
+        days: ["monday", "tuesday", "wednesday", "thursday", "friday"],
+        enableHolidayCheck: true,
+        randomizeLogin: true,
+        employeeName: "",
+        answersJson: "{}",
+        sessionCookie: "",
+        geminiApiKey: "",
+        useDaySpecificJson: false,
+        daySpecificAnswersJson: {
+          monday: "",
+          tuesday: "",
+          wednesday: "",
+          thursday: "",
+          friday: "",
+          saturday: "",
+          sunday: ""
+        }
+      });
+      setFeedbackMsg({ type: "success", text: "Logged out successfully" });
+      setTimeout(() => setFeedbackMsg(null), 3500);
+    } catch (err) {
+      console.error("Logout error:", err);
+    }
+  };
   
 
 
   const [actionLoading, setActionLoading] = useState<boolean>(false);
   const [feedbackMsg, setFeedbackMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [currentTime, setCurrentTime] = useState<Date>(new Date());
+  const [selectedConfigDay, setSelectedConfigDay] = useState<string>("monday");
+  const [fieldLabels, setFieldLabels] = useState<Record<string, string>>({});
+
   // Interactive Mobile Form States & Helpers
   const [isJsonViewActive, setIsJsonViewActive] = useState<boolean>(false);
   const [newFieldName, setNewFieldName] = useState<string>("");
@@ -185,16 +329,10 @@ export default function App() {
   };
 
   const getFriendlyLabel = (key: string) => {
-    if (key === "name") return "Primary Account Name";
-    if (key.startsWith("email_")) return "Work email address";
-    if (key.startsWith("color_")) return "Monday Workgroup Option ID";
-    if (key === "booleanvky5wtu0") return "Are you reporting for duty today?";
-    if (key === "boolean7kqnipqy") return "Are you currently on annual leave / medical leave?";
-    if (key === "booleanimy35rjk") return "Acknowledge health, safety, & location terms";
-    if (key.startsWith("boolean")) {
-      return "Checkbox Toggle Option";
+    if (fieldLabels && fieldLabels[key]) {
+      return fieldLabels[key];
     }
-    return "Custom Input Field";
+    return key;
   };
 
   const logsEndRef = useRef<HTMLDivElement>(null);
@@ -208,13 +346,19 @@ export default function App() {
   }, []);
 
   // Fetch initial configuration on mount
-  const refreshStatus = async () => {
+  const refreshStatus = async (isPoll: boolean = false) => {
     try {
       const res = await fetch("/api/scheduler/status");
+      if (res.status === 401) {
+        setCurrentUser(null);
+        return;
+      }
       const result = await res.json();
       if (result.status === "ok") {
         setIsSchedulerRunning(result.running);
-        setSettings(result.settings);
+        if (!isPoll) {
+          setSettings(result.settings);
+        }
         setLastLoginTime(result.lastLoginTime);
       }
     } catch (err) {
@@ -225,6 +369,10 @@ export default function App() {
   const refreshLogs = async () => {
     try {
       const res = await fetch("/api/logs");
+      if (res.status === 401) {
+        setCurrentUser(null);
+        return;
+      }
       const result = await res.json();
       if (result.status === "ok") {
         setBackendLogs(result.logs);
@@ -234,12 +382,25 @@ export default function App() {
     }
   };
 
+  const fetchFieldLabels = async () => {
+    try {
+      const res = await fetch("/api/field-labels");
+      const result = await res.json();
+      if (result.status === "ok" && result.labels) {
+        setFieldLabels(result.labels);
+      }
+    } catch (err) {
+      console.error("Error loading field labels:", err);
+    }
+  };
+
   useEffect(() => {
-    refreshStatus();
+    refreshStatus(false);
     refreshLogs();
+    fetchFieldLabels();
 
     // Poll logs and status periodically
-    const statusTimer = setInterval(refreshStatus, 6000);
+    const statusTimer = setInterval(() => refreshStatus(true), 6000);
     const logsTimer = setInterval(refreshLogs, 3000);
 
     return () => {
@@ -317,7 +478,7 @@ export default function App() {
           text: "AutoLogin manual execution finished successfully!"
         });
         setTimeout(() => setFeedbackMsg(null), 5000);
-        refreshStatus();
+        refreshStatus(false);
         refreshLogs();
       } else {
         throw new Error(result.message || "Execution error");
@@ -388,34 +549,153 @@ export default function App() {
     setSettings({ ...settings, days: nextDays });
   };
 
+  const isAndroidWebView = window.location.pathname === "/android" || window.location.search.includes("view=android");
+
+  const viewportClass = isAndroidWebView
+    ? "w-full min-h-screen bg-[#12141C] flex flex-col font-sans text-slate-100 antialiased"
+    : "min-h-screen bg-[#0A0C10] flex flex-col items-center justify-center font-sans text-slate-100 selection:bg-indigo-500/20 antialiased p-0 md:py-8";
+
+  const containerClass = isAndroidWebView
+    ? "w-full min-h-screen bg-[#12141C] flex flex-col overflow-hidden relative"
+    : "w-full max-w-md min-h-screen md:min-h-[820px] md:max-h-[850px] bg-[#12141C] md:rounded-[40px] md:border-8 md:border-[#222632] md:shadow-[0_0_80px_rgba(0,0,0,0.6)] flex flex-col overflow-hidden relative";
+
+  if (!isMeLoaded) {
+    return (
+      <div className="min-h-screen bg-[#0A0C10] flex flex-col items-center justify-center font-sans text-slate-100">
+        <div className="flex flex-col items-center gap-3">
+          <Loader2 className="h-8 w-8 animate-spin text-indigo-500" />
+          <span className="text-xs font-semibold text-slate-400">Loading Portal Engine...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (!currentUser) {
+    return (
+      <div className={viewportClass}>
+        <div className={containerClass}>
+          {/* Header */}
+          <header className="sticky top-0 z-40 bg-[#12141C]/90 backdrop-blur-md border-b border-[#2D3348] py-5 px-6 text-center">
+            <span className="font-extrabold tracking-tight text-base text-[#F8FAFC]">AutoLogin Portal</span>
+            <p className="text-[10px] text-slate-400 mt-0.5 font-medium">Enterprise Submission Daemon</p>
+          </header>
+
+          <main className="flex-1 flex flex-col justify-center px-6 py-8 space-y-6">
+            <div className="text-center space-y-2">
+              <div className="mx-auto h-12 w-12 rounded-2xl bg-indigo-600/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
+                <User className="h-6 w-6" />
+              </div>
+              <h2 className="text-xl font-extrabold text-white tracking-tight">
+                {authMode === "login" ? "Welcome Back" : "Create Account"}
+              </h2>
+              <p className="text-xs text-slate-400 font-medium">
+                {authMode === "login"
+                  ? "Access your automated submission rules"
+                  : "Register a secure agent profile"}
+              </p>
+            </div>
+
+            <form onSubmit={authMode === "login" ? handleLogin : handleRegister} className="space-y-4">
+              {authMode === "register" && (
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-[#64748B]">Full Name</label>
+                  <input
+                    type="text"
+                    required
+                    value={authEmployeeName}
+                    onChange={(e) => setAuthEmployeeName(e.target.value)}
+                    placeholder="e.g. Your Name"
+                    className="w-full bg-[#0F111A] border border-[#2D3348] rounded-xl px-3.5 py-2.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-semibold"
+                  />
+                </div>
+              )}
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold uppercase tracking-wider text-[#64748B]">Work Email</label>
+                <input
+                  type="email"
+                  required
+                  value={authEmail}
+                  onChange={(e) => setAuthEmail(e.target.value)}
+                  placeholder="e.g. name@domain.com"
+                  className="w-full bg-[#0F111A] border border-[#2D3348] rounded-xl px-3.5 py-2.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-semibold"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold uppercase tracking-wider text-[#64748B]">Password</label>
+                <input
+                  type="password"
+                  required
+                  value={authPassword}
+                  onChange={(e) => setAuthPassword(e.target.value)}
+                  placeholder="••••••••"
+                  className="w-full bg-[#0F111A] border border-[#2D3348] rounded-xl px-3.5 py-2.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-mono"
+                />
+              </div>
+
+              {authError && (
+                <div className="p-3 bg-rose-950/40 text-rose-400 border border-rose-500/25 rounded-xl text-xs font-semibold leading-relaxed">
+                  {authError}
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={authLoading}
+                className="w-full bg-indigo-600 hover:bg-indigo-500 active:scale-98 text-white font-extrabold py-3.5 rounded-2xl text-xs tracking-wider transition-all shadow-lg shadow-indigo-600/10 cursor-pointer uppercase flex items-center justify-center gap-2"
+              >
+                {authLoading ? (
+                  <Loader2 className="h-4.5 w-4.5 animate-spin" />
+                ) : (
+                  <span>{authMode === "login" ? "Sign In" : "Sign Up"}</span>
+                )}
+              </button>
+            </form>
+
+            <div className="text-center">
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthMode(authMode === "login" ? "register" : "login");
+                  setAuthError(null);
+                }}
+                className="text-xs text-indigo-400 hover:text-indigo-300 font-bold transition-colors cursor-pointer"
+              >
+                {authMode === "login"
+                  ? "Don't have an account? Sign up"
+                  : "Already have an account? Sign in"}
+              </button>
+            </div>
+          </main>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div id="main_viewport" className="min-h-screen bg-[#0A0C10] flex flex-col items-center justify-center font-sans text-slate-100 selection:bg-indigo-500/20 antialiased p-0 md:py-8">
+    <div id="main_viewport" className={viewportClass}>
       
       {/* Dynamic Device Mockup Shell */}
-      <div className="w-full max-w-md min-h-screen md:min-h-[820px] md:max-h-[850px] bg-[#12141C] md:rounded-[40px] md:border-8 md:border-[#222632] md:shadow-[0_0_80px_rgba(0,0,0,0.6)] flex flex-col overflow-hidden relative">
+      <div className={containerClass}>
         
         {/* Brand Header bar */}
-        <header id="app_header" className="sticky top-0 z-40 bg-[#12141C]/90 backdrop-blur-md border-b border-[#2D3348] py-4.5 px-5 flex items-center justify-between">
+        <header id="app_header" className="sticky top-0 z-40 bg-[#12141C]/90 backdrop-blur-md border-b border-[#2D3348] py-4 px-5 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <div className={`h-2.5 w-2.5 rounded-full ${isSchedulerRunning ? "bg-emerald-500 animate-pulse" : "bg-amber-500"}`} />
             <div>
-              <span className="font-extrabold tracking-tight text-sm text-[#F8FAFC]">AutoLogin Portal</span>
-              <span className="ml-1.5 text-[9px] bg-indigo-950 text-indigo-300 border border-indigo-800/40 px-1.5 py-0.5 rounded-full font-mono">
-                Engine
-              </span>
+              <span className="font-extrabold tracking-tight text-sm text-[#F8FAFC] block leading-tight">{currentUser.employeeName}</span>
+              <span className="text-[10px] text-[#64748B] block leading-none truncate max-w-[150px] font-mono">{currentUser.email}</span>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
-            {isSchedulerRunning ? (
-              <span className="text-[10px] bg-emerald-950/40 text-emerald-400 border border-emerald-500/25 px-2.5 py-1 rounded-full font-extrabold uppercase tracking-wide">
-                Active
-              </span>
-            ) : (
-              <span className="text-[10px] bg-amber-950/40 text-amber-400 border border-amber-500/20 px-2.5 py-1 rounded-full font-extrabold uppercase tracking-wide">
-                Paused
-              </span>
-            )}
+            <button
+              onClick={handleLogout}
+              className="text-[9px] bg-rose-950/40 hover:bg-rose-900/60 text-rose-400 border border-rose-500/20 px-2.5 py-1 rounded-full font-extrabold uppercase tracking-wide cursor-pointer transition-colors"
+            >
+              Log Out
+            </button>
           </div>
         </header>
 
@@ -698,7 +978,7 @@ export default function App() {
                           type="email"
                           value={settings.email}
                           onChange={(e) => setSettings({ ...settings, email: e.target.value })}
-                          placeholder="e.g. roman.cabalum@ibm.com"
+                          placeholder="e.g. your@email.com"
                           className="w-full bg-[#0F111A] border border-[#2D3348] rounded-xl px-3.5 py-2.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-semibold"
                         />
                       </div>
@@ -929,6 +1209,89 @@ export default function App() {
                             </div>
                           </div>
 
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Day-Specific Payload Configuration Toggle */}
+                    <div className="bg-[#0F111A]/40 border border-[#2D3348]/40 rounded-2xl p-4.5 space-y-4">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <span className="text-[10px] font-bold text-slate-300 uppercase tracking-wider block">
+                            Day-Specific Payloads
+                          </span>
+                          <span className="text-[9px] text-[#64748B] block mt-0.5">
+                            Use different JSON payloads depending on the day of the week
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setSettings({ ...settings, useDaySpecificJson: !settings.useDaySpecificJson })}
+                          className="transition-colors cursor-pointer"
+                        >
+                          {settings.useDaySpecificJson ? (
+                            <ToggleRight className="h-7 w-7 text-indigo-400 fill-indigo-400/20" />
+                          ) : (
+                            <ToggleLeft className="h-7 w-7 text-slate-600" />
+                          )}
+                        </button>
+                      </div>
+
+                      {settings.useDaySpecificJson && (
+                        <div className="space-y-3 animate-fadeIn">
+                          {/* Horizontal Day Tabs */}
+                          <div className="flex gap-1 overflow-x-auto pb-1 scrollbar-thin scrollbar-thumb-slate-800">
+                            {["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"].map((day) => (
+                              <button
+                                key={day}
+                                type="button"
+                                onClick={() => setSelectedConfigDay(day)}
+                                className={`px-3 py-1.5 rounded-lg text-[10px] font-semibold capitalize whitespace-nowrap cursor-pointer transition-all ${
+                                  selectedConfigDay === day
+                                    ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/10"
+                                    : "bg-[#12141C] text-slate-400 hover:text-slate-200 border border-[#2D3348]/50"
+                                }`}
+                              >
+                                {day.substring(0, 3)}
+                              </button>
+                            ))}
+                          </div>
+
+                          {/* Textarea for selected day */}
+                          <div className="space-y-1.5">
+                            <div className="flex justify-between items-center">
+                              <span className="text-[9px] font-semibold text-slate-400 capitalize">
+                                {selectedConfigDay} Payload (Raw JSON):
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const updatedSpecific = { ...settings.daySpecificAnswersJson };
+                                  updatedSpecific[selectedConfigDay] = settings.answersJson;
+                                  setSettings({
+                                    ...settings,
+                                    daySpecificAnswersJson: updatedSpecific
+                                  });
+                                }}
+                                className="text-[9px] text-indigo-400 font-semibold hover:text-indigo-300 transition-colors cursor-pointer"
+                              >
+                                Copy Default Payload
+                              </button>
+                            </div>
+                            <textarea
+                              value={settings.daySpecificAnswersJson?.[selectedConfigDay] || ""}
+                              onChange={(e) => {
+                                const updatedSpecific = { ...settings.daySpecificAnswersJson };
+                                updatedSpecific[selectedConfigDay] = e.target.value;
+                                setSettings({
+                                  ...settings,
+                                  daySpecificAnswersJson: updatedSpecific
+                                });
+                              }}
+                              placeholder={`{"answers": { ... }}`}
+                              className="w-full h-32 bg-[#0F111A] border border-[#2D3348] rounded-xl p-3 font-mono text-[11px] text-slate-300 focus:outline-none focus:border-indigo-500 resize-none leading-relaxed"
+                            />
+                          </div>
                         </div>
                       )}
                     </div>
