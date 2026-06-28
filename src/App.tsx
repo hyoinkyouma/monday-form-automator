@@ -615,7 +615,7 @@ export default function App() {
             <p className="text-[10px] text-slate-400 mt-0.5 font-medium">Enterprise Submission Daemon</p>
           </header>
 
-          <main className="flex-1 flex flex-col justify-center px-6 py-8 space-y-6">
+          <main className="flex-1 flex flex-col justify-center px-6 py-8 space-y-6 ">
             <div className="text-center space-y-2">
               <div className="mx-auto h-12 w-12 rounded-2xl bg-indigo-600/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
                 <User className="h-6 w-6" />
@@ -1652,7 +1652,7 @@ export default function App() {
         </header>
 
         {/* Scrollable Main Area */}
-        <main id="app_main" className="flex-1 overflow-y-auto px-5 py-5 flex flex-col justify-start">
+        <main id="app_main" className="flex-1 pb-[100px] overflow-y-auto px-5 py-5 flex flex-col justify-start">
           
           {/* Dynamic feedback messages */}
           <AnimatePresence>
@@ -2348,7 +2348,7 @@ export default function App() {
         </main>
 
         {/* Persistent Bottom Tab Navigation Bar */}
-        <footer id="app_footer" className="sticky bottom-0 z-40 bg-[#12141C] border-t border-[#2D3348] py-4 px-6 flex justify-around items-center shadow-lg">
+        <footer id="app_footer" className="fixed w-full h-[80px] bottom-0 z-40 bg-[#12141C] border-t border-[#2D3348] py-4 px-6 flex justify-around items-center shadow-lg">
           
           {/* Dashboard Tab */}
           <button
