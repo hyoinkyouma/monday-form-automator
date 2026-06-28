@@ -567,32 +567,13 @@ export default function App() {
 
   const isAndroidWebView = window.location.pathname === "/android" || window.location.search.includes("view=android");
 
-  const [viewMode, setViewMode] = useState<"desktop" | "mobile">(() => {
-    if (isAndroidWebView) return "mobile";
-    if (typeof window !== "undefined") {
-      const saved = localStorage.getItem("viewMode");
-      if (saved === "desktop" || saved === "mobile") return saved;
-    }
-    return "desktop";
-  });
-
-  const toggleViewMode = () => {
-    const next = viewMode === "desktop" ? "mobile" : "desktop";
-    setViewMode(next);
-    localStorage.setItem("viewMode", next);
-  };
-
   const viewportClass = isAndroidWebView
     ? "w-full min-h-screen bg-[#12141C] flex flex-col font-sans text-slate-100 antialiased"
-    : viewMode === "desktop"
-      ? "min-h-screen bg-[#0A0C10] flex flex-col items-center justify-center font-sans text-slate-100 selection:bg-indigo-500/20 antialiased p-4 md:p-8"
-      : "min-h-screen bg-[#0A0C10] flex flex-col items-center justify-center font-sans text-slate-100 selection:bg-indigo-500/20 antialiased p-0 md:py-8";
+    : "min-h-screen bg-[#0A0C10] flex flex-col items-center justify-center font-sans text-slate-100 selection:bg-indigo-500/20 antialiased p-4 md:p-8";
 
   const containerClass = isAndroidWebView
     ? "w-full min-h-screen bg-[#12141C] flex flex-col overflow-hidden relative"
-    : viewMode === "desktop"
-      ? "w-full max-w-md bg-[#12141C] rounded-[42px] border-8 border-[#222632] shadow-[0_0_80px_rgba(0,0,0,0.6)] flex flex-col overflow-hidden relative p-2"
-      : "w-full max-w-md min-h-screen md:min-h-[820px] md:max-h-[850px] bg-[#12141C] md:rounded-[40px] md:border-8 md:border-[#222632] md:shadow-[0_0_80px_rgba(0,0,0,0.6)] flex flex-col overflow-hidden relative";
+    : "w-full max-w-md bg-[#12141C] rounded-[42px] border-8 border-[#222632] shadow-[0_0_80px_rgba(0,0,0,0.6)] flex flex-col overflow-hidden relative p-2";
 
   if (!isMeLoaded) {
     return (
@@ -708,7 +689,7 @@ export default function App() {
     );
   }
 
-  if (viewMode === "desktop" && !isAndroidWebView) {
+  if (!isAndroidWebView) {
     return (
       <div id="desktop_viewport" className="min-h-screen bg-[#0A0C10] flex text-slate-100 antialiased font-sans">
         
@@ -787,19 +768,6 @@ export default function App() {
 
           {/* Footer of Sidebar */}
           <div className="p-4 border-t border-[#2D3348] space-y-3 bg-[#12141C]">
-            <div className="bg-[#1C1F2A] p-3 rounded-xl border border-[#2D3348] flex flex-col gap-2">
-              <div className="flex justify-between items-center">
-                <span className="text-[10px] text-[#64748B] font-bold uppercase tracking-wider">Device Shell</span>
-                <span className="text-[9px] bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 px-1.5 py-0.5 rounded font-mono font-bold">DESKTOP</span>
-              </div>
-              <button
-                onClick={toggleViewMode}
-                className="w-full text-center text-[10px] bg-indigo-600/20 hover:bg-indigo-600/35 text-indigo-300 border border-indigo-500/25 py-2 rounded-lg font-bold transition-all cursor-pointer"
-              >
-                📱 Switch to Mobile Phone
-              </button>
-            </div>
-
             <button
               onClick={handleLogout}
               className="w-full py-2.5 bg-rose-950/40 hover:bg-rose-900/60 text-rose-400 border border-rose-500/20 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer flex items-center justify-center gap-2"
@@ -1633,15 +1601,6 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2">
-            {!isAndroidWebView && (
-              <button
-                onClick={toggleViewMode}
-                className="text-[9px] bg-indigo-950/40 hover:bg-indigo-900/60 text-indigo-400 border border-indigo-500/20 px-2.5 py-1 rounded-full font-extrabold uppercase tracking-wide cursor-pointer transition-colors mr-1"
-                title="Switch to Desktop Mode"
-              >
-                💻 Desktop
-              </button>
-            )}
             <button
               onClick={handleLogout}
               className="text-[9px] bg-rose-950/40 hover:bg-rose-900/60 text-rose-400 border border-rose-500/20 px-2.5 py-1 rounded-full font-extrabold uppercase tracking-wide cursor-pointer transition-colors"

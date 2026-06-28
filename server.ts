@@ -129,6 +129,37 @@ const defaultSettings: AppSettings = {
   }
 };
 
+function hasExistingAnswersJson(answersJson?: string): boolean {
+  if (!answersJson?.trim() || answersJson.trim() === "{}") return false;
+  try {
+    const parsed = JSON.parse(answersJson);
+    return Boolean(parsed?.answers && Object.keys(parsed.answers).length > 0);
+  } catch {
+    return false;
+  }
+}
+
+function buildPrefilledAnswersJson(email: string, employeeName: string): string {
+  const template = JSON.parse(defaultSettings.answersJson);
+  template.answers.name = employeeName;
+  for (const key of Object.keys(template.answers)) {
+    if (key.startsWith("email_")) {
+      template.answers[key] = email;
+    }
+  }
+  return JSON.stringify(template, null, 2);
+}
+
+function ensureUserSettingsDefaults(user: User): AppSettings {
+  const settings = { ...user.settings };
+  if (!hasExistingAnswersJson(settings.answersJson)) {
+    settings.answersJson = buildPrefilledAnswersJson(user.email, user.employeeName);
+    user.settings.answersJson = settings.answersJson;
+    saveUsers(user.email);
+  }
+  return settings;
+}
+
 // Initialize MongoDB client if env var is set
 let mongoClient: MongoClient | null = null;
 let mongoDb: Db | null = null;
@@ -243,7 +274,14 @@ async function loadUsers() {
         email: seedEmail,
         passwordHash: hashPassword("password"), // Default password to seed
         employeeName: seedName,
-        settings: { ...migratedSettings, email: seedEmail, employeeName: seedName },
+        settings: {
+          ...migratedSettings,
+          email: seedEmail,
+          employeeName: seedName,
+          answersJson: hasExistingAnswersJson(migratedSettings.answersJson)
+            ? migratedSettings.answersJson
+            : buildPrefilledAnswersJson(seedEmail, seedName),
+        },
         logs: [],
         lastLoginTime: null,
         lastExecutedDay: null
@@ -496,7 +534,7 @@ let lastLoginTime: string | null = null;
 
 // Main autologin function
 async function doAutoLogin(user: User, isManual = false, overrideCookie?: string) {
-  const settings = user.settings;
+  const settings = ensureUserSettingsDefaults(user);
   const log = (msg: string, sec = "APP") => logForUser(user, msg, sec);
 
   log("Starting AutoLogin process...", isManual ? "MANUAL_TEST" : "SCHEDULER_CALLBACK");
@@ -997,7 +1035,7 @@ async function startServer() {
   // API Route: Settings GET
   app.get("/api/settings", requireAuth, (req, res) => {
     const user = (req as any).user as User;
-    res.json({ status: "ok", data: user.settings });
+    res.json({ status: "ok", data: ensureUserSettingsDefaults(user) });
   });
 
   // API Route: Settings POST
@@ -1042,7 +1080,8 @@ async function startServer() {
         settings: {
           ...defaultSettings,
           email: cleanEmail,
-          employeeName: employeeName.trim()
+          employeeName: employeeName.trim(),
+          answersJson: buildPrefilledAnswersJson(cleanEmail, employeeName.trim()),
         },
         logs: [],
         lastLoginTime: null,
@@ -1101,12 +1140,13 @@ async function startServer() {
       });
 
       log(`User logged in successfully: ${cleanEmail}`, "AUTH");
+      const settings = ensureUserSettingsDefaults(user);
       res.json({
         status: "ok",
         user: {
           email: user.email,
           employeeName: user.employeeName,
-          settings: user.settings,
+          settings,
           lastLoginTime: user.lastLoginTime
         }
       });
@@ -1141,7 +1181,7 @@ async function startServer() {
       user: {
         email: user.email,
         employeeName: user.employeeName,
-        settings: user.settings,
+        settings: ensureUserSettingsDefaults(user),
         lastLoginTime: user.lastLoginTime
       }
     });
@@ -1175,7 +1215,7 @@ async function startServer() {
     res.json({
       status: "ok",
       running: schedulerInterval !== null,
-      settings: user.settings,
+      settings: ensureUserSettingsDefaults(user),
       lastLoginTime: user.lastLoginTime
     });
   });
